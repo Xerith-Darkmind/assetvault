@@ -168,11 +168,13 @@ async function itemForm(it){const isNew=!it;modal(isNew?"+ ADD ITEM (manual)":"E
  ${isNew?"":`<p class="dim" style="font:11px var(--mono)">Serial left blank = unchanged (current ${esc(it.serial_masked||"none")}). Clearing other fields sets them empty.</p>`}
  <div class="actions"><button id="itSave">${isNew?"Add item":"Save changes"}</button><button class="amber" data-close>Cancel</button></div>`);
  $("itSave").onclick=async()=>{const f=$("itf");const v=formVals(f,isNew);try{if(isNew){const r=await api("api/item",v);openId=r.id;toast("item added")}else{await api(`api/item/${it.id}/edit`,v);toast("saved")}closeModal();load()}catch(e){toast(e.message,1)}}}
-function logForm(id){const t=new Date(),p=n=>String(n).padStart(2,"0");const today=`${t.getFullYear()}-${p(t.getMonth()+1)}-${p(t.getDate())}T${p(t.getHours())}:${p(t.getMinutes())}`;
+function isoOffset(t){const p=n=>String(Math.trunc(Math.abs(n))).padStart(2,"0");const off=-t.getTimezoneOffset(),sign=off>=0?"+":"-";
+ return `${t.getFullYear()}-${p(t.getMonth()+1)}-${p(t.getDate())}T${p(t.getHours())}:${p(t.getMinutes())}:${p(t.getSeconds())}${sign}${p(off/60)}:${p(off%60)}`}
+function logForm(id){const today=isoOffset(new Date());
  modal("LOG BACKUP RESULT",`<form id="lf" class="form"><label>Date<input name="date" value="${today}" placeholder="YYYY-MM-DD or ISO datetime"></label><label>Result<select name="result"><option>success</option><option>partial</option><option>failed</option><option>manual</option></select></label><label style="grid-column:1/-1">Note<input name="note"></label></form>
  <div class="actions"><button id="lfSave">Log</button><button class="amber" data-close>Cancel</button></div>`);
  $("lfSave").onclick=async()=>{try{await api(`api/item/${id}/log_backup`,formVals($("lf")));closeModal();toast("logged");load()}catch(e){toast(e.message,1)}}}
-function delForm(it){modal("DELETE ITEM",`<p>This permanently removes <b>${esc(it.name)}</b> and its backup history from the vault. Type the item name exactly to confirm.</p>
+function delForm(it){modal("DELETE ITEM",`<p>This permanently removes <b>${esc(it.name)}</b>, its backup history, and its photos and receipts. Type the item name exactly to confirm.</p>
  <input id="delName" style="width:100%" autocomplete="off"><div class="actions"><button class="danger" id="delGo">Delete</button><button class="amber" data-close>Cancel</button></div>`);
  $("delGo").onclick=async()=>{try{await api(`api/item/${it.id}/delete`,{confirm_name:$("delName").value});closeModal();openId=null;toast("deleted");load()}catch(e){toast(e.message,1)}}}
 function attach(id,kind){const inp=document.createElement("input");inp.type="file";inp.accept=kind==="photo"?"image/*":"image/*,application/pdf";

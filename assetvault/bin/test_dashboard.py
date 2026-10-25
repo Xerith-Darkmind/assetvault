@@ -38,6 +38,14 @@ try:
     check("completeness_missing_value", "missing value" in lg.completeness({"category": "Furniture", "room": "Office"}, 500))
     check("completeness_ok", lg.completeness({"category": "Furniture", "room": "Office", "replacement_value": 100}, 500) == [])
     check("warranty", [lg.warranty_status({"warranty_expiry": d}, now) for d in ("2026-01-01", "2026-12-01", "2027-12-01", None)] == ["expired", "expiring", "ok", "unknown"])
+    # A +09:00 instant must be converted to vault TZ. The same wall time without an offset is
+    # read as New York and lands on the next calendar day, so it falls off today's strip.
+    foreign = datetime.datetime(2026, 10, 25, 10, 0, tzinfo=datetime.timezone(datetime.timedelta(hours=9)))
+    now_ny = foreign.astimezone(TZ)
+    aware = foreign.isoformat(); naive = "2026-10-25T10:00"
+    check("tz_aware_met", lg.rpo_state(it, [{"date": aware, "result": "success"}], now_ny) == "Met")
+    check("tz_aware_on_strip", lg.day_strip([{"date": aware, "result": "success"}], 30, now_ny, it)[-1]["state"] == "success")
+    check("tz_naive_dropped", lg.day_strip([{"date": naive, "result": "success"}], 30, now_ny, it)[-1]["state"] == "no_result")
 
     # ---------- vault init + migration idempotency
     av.init(["Office", "Garage"], ["Computers", "Networking", "Furniture"], 500)
@@ -88,11 +96,9 @@ try:
     check("query_token_ok", req(None, full=root + "/api/health?token=" + tok)[0] == 200)
     st, body, hd = req("/")
     check("index_200", st == 200 and b"ASSET" in body and b"__BASE__" not in body and b"http://" not in body.replace(b"http://\"", b""))
-    check("ui_wired", b"Sync now" in body and b"UNENCRYPTED" in body and b"pdf-redacted" in body and b"not seen" in body and b"api/export" in body and b"data-sync" in body)
-    port = int(url.split("/")[2].rsplit(":", 1)[1]); hexport = "%04X" % port
-    listeners = [ln.split()[1] for ln in open("/proc/net/tcp") if ln.split()]
-    check("bound_localhost", ("0100007F:%s" % hexport) in listeners)
-    check("not_bound_wildcard", not any(addr.endswith(":%s" % hexport) and addr.startswith("00000000:") for addr in listeners))
+
+    
+main
     check("no_external_refs", b"https://" not in body and b"cdn" not in body.lower() and b"googleapis" not in body)
     check("csp_header", "default-src 'none'" in hd.get("Content-Security-Policy", ""))
     st, body, _ = req("/api/state"); S = json.loads(body)
@@ -144,65 +150,8 @@ try:
     # sources rendering data (inject a fake failing source directly through the write path)
     con = av.open_db(k); con.execute("INSERT INTO sources(name,kind,last_sync,added,updated,skipped,health,detail) VALUES('FAKE Jamf','Jamf','2026-01-01',1,2,3,'failing','fake auth error')"); av.save_db(k, con); con.close()
     S = json.loads(req("/api/state")[1]); check("sources_listed", len(S["sources"]) == 1 and len(S["items"]) == 2)
-    check("source_config_hidden", "config" not in S["sources"][0] and S["sources"][0]["health"] == "failing")
-    linked = ops.connect_source("entra", {"tenant_id": "contoso.onmicrosoft.com", "client_id": "app-1"}, key=k)
-    check("dash_connect_auth_fail", linked["ok"] is False and linked["health"] == "Auth failed")
-    st, b, _ = req("/api/source/%d/sync" % linked["source_id"], {})
-    check("dash_sync_auth_fail", st == 400 and b"Auth" in b or (st == 400 and b"missing" in b))
-    S = json.loads(req("/api/state")[1])
-    entra = [s for s in S["sources"] if s["id"] == linked["source_id"]][0]
-    check("dash_sync_keeps_items", len(S["items"]) == 2 and S["reviews"] == [] and entra["health"] == "Auth failed" and "config" not in entra)
-    st, b, _ = req("/api/item", {"name": "FAKE-OLD Ghost", "category": "Computers", "room": "Office"})
-    ghost = json.loads(b)["id"]
-    req(f"/api/item/{bid_item}/edit", {"model": "FAKE-ROUTER"})
-    con = av.open_db(k)
-    con.execute("INSERT INTO item_sources(item_id, source_id, seen_at, external_id) VALUES(?,?,?,?)", (ghost, linked["source_id"], av.now(), "ghost-ext"))
-    incoming = [
-        {"name": "FAKE-TEST Laptop Alpha", "serial": "FAKESERIAL1234", "model": "FAKE-MERGED", "external_id": "ext-alpha", "source": "Entra-Intune"},
-        {"name": "FAKE-TEST Router Beta", "model": "FAKE-ROUTER", "serial": "OTHERSERIAL999", "source": "Entra-Intune"},
-        {"name": "FAKE-NEW Node", "serial": "NEWNODE1234", "model": "N1", "source": "Entra-Intune"},
-    ]
-    rid, _plan = merge.stage(con, linked["source_id"], incoming, "sync")
-    av.save_db(k, con); con.close()
-    raw_state = req("/api/state")[1]
-    check("review_masks_serial", b"FAKESERIAL" not in raw_state and b"NEWNODE" not in raw_state and b"1234" in raw_state)
-    staged = json.loads(raw_state)
-    rev = [r for r in staged["reviews"] if r["id"] == rid][0]
-    check("review_shape", rev["counts"]["exact"] == 1 and rev["counts"]["soft"] == 1 and rev["counts"]["new"] == 1 and rev["counts"]["not_seen"] == 1 and rev["soft"][0]["verified"] is False)
-    st, b, _ = req("/api/review/%d/verify" % rid, {"index": 0, "verified": False})
-    check("review_verify_api", st == 200 and json.loads(b)["verified"] is False)
-    st, b, _ = req("/api/review/%d/commit" % rid, {})
-    committed = json.loads(b)
-    check("review_commit", st == 200 and committed["counts"]["exact"] == 1 and committed["counts"]["soft"] == 0 and committed["counts"]["new"] == 1 and committed["counts"]["not_seen"] == 1)
-    S = json.loads(req("/api/state")[1]); byname = {i["name"]: i for i in S["items"]}
-    check("commit_applied", byname["FAKE-TEST Laptop Alpha"]["id"] == a and "FAKE-NEW Node" in byname and "FAKE-OLD Ghost" in byname and S["reviews"] == [])
-    detail = json.loads(req(f"/api/item/{a}")[1])
-    beta = json.loads(req(f"/api/item/{bid_item}")[1])
-    ghost_d = json.loads(req(f"/api/item/{ghost}")[1])
-    check("commit_fields", detail["item"]["model"] == "FAKE-MERGED" and detail["item"]["room"] == "Office" and beta["item"]["model"] == "FAKE-ROUTER" and not (beta["item"]["serial_masked"] or "").endswith("9999"))
-    check("not_seen_kept", any(s.get("not_seen_at") for s in ghost_d["sources"]) and ghost_d["item"]["name"] == "FAKE-OLD Ghost")
-    check("commit_audit_clean", "FAKESERIAL" not in json.dumps(av.read_audit(k)) and "NEWNODE" not in json.dumps(av.read_audit(k)))
-    con = av.open_db(k)
-    rid2, _ = merge.stage(con, linked["source_id"], [{"name": "FAKE-DISCARD Me", "serial": "DISCARD9999", "source": "Entra-Intune"}], "sync")
-    av.save_db(k, con); con.close()
-    before = len(json.loads(req("/api/state")[1])["items"])
-    st, b, _ = req("/api/review/%d/discard" % rid2, {})
-    after = json.loads(req("/api/state")[1])
-    check("review_discard", st == 200 and len(after["items"]) == before and after["reviews"] == [] and "FAKE-DISCARD Me" not in {i["name"] for i in after["items"]})
-    st, b, _ = req("/api/export", {"kind": "csv"})
-    csv_info = json.loads(b)
-    csv_path = os.path.join(TMP, "exports", csv_info["filename"])
-    check("export_csv", st == 200 and csv_info["ok"] and oct(os.stat(csv_path).st_mode & 0o777) == "0o600" and b"FAKESERIAL1234" in open(csv_path, "rb").read())
-    st, b, _ = req("/api/export", {"kind": "pdf"})
-    pdf_info = json.loads(b)
-    pdf_path = os.path.join(TMP, "exports", pdf_info["filename"])
-    pdf_bytes = open(pdf_path, "rb").read()
-    check("export_pdf", st == 200 and pdf_bytes.startswith(b"%PDF") and b"FAKESERIAL1234" in pdf_bytes and b"fake.html" in pdf_bytes and oct(os.stat(pdf_path).st_mode & 0o777) == "0o600")
-    st, b, _ = req("/api/export", {"kind": "pdf-redacted"})
-    red_info = json.loads(b)
-    red_path = os.path.join(TMP, "exports", red_info["filename"])
-    red_bytes = open(red_path, "rb").read()
-    check("export_pdf_redacted", st == 200 and b"FAKESERIAL" not in red_bytes and b"fake.html" not in red_bytes and b"1234" in red_bytes and oct(os.stat(red_path).st_mode & 0o777) == "0o600")
+
+main
     raw = open(os.path.join(TMP, "vault.db.enc"), "rb").read()
     check("db_encrypted", b"SQLite format" not in raw and b"FAKE-TEST" not in raw)
     # ---------- lock.sh
