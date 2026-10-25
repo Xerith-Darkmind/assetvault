@@ -1,11 +1,17 @@
 """End-to-end test against a THROWAWAY temp vault with clearly fake data. Never touches the real vault."""
-import os, sys, json, secrets, tempfile, shutil, subprocess, time, base64, datetime, urllib.request, urllib.error
-REAL = os.environ.get("ASSETVAULT_ROOT", "/workspace/assetvault")   # install root whose bin/ and .venv/ are tested
+import os, sys, json, secrets, tempfile, shutil, subprocess, time, base64, datetime, threading, urllib.request, urllib.error
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+_BIN = os.path.dirname(os.path.abspath(__file__))
+_INSTALL = os.path.dirname(_BIN)
+REAL = os.environ.get("ASSETVAULT_ROOT", _INSTALL)   # install root whose bin/ and .venv/ are tested
 TMP = tempfile.mkdtemp(prefix="avtest-"); os.chmod(TMP, 0o700)
 os.environ["ASSETVAULT_ROOT"] = TMP
 os.environ["ASSETVAULT_PASSPHRASE"] = "throwaway-" + secrets.token_hex(16)   # overrides only inside this process
+for _secret_name in ("ASSETVAULT_GRAPH_SECRET", "ASSETVAULT_AD_PASSWORD", "ASSETVAULT_JAMF_SECRET", "ASSETVAULT_REST_TOKEN", "ASSETVAULT_REST_PASSWORD"):
+    os.environ.pop(_secret_name, None)
 BIN = os.path.join(REAL, "bin"); sys.path.insert(0, BIN)
 import avcore as av, avlogic as lg
+import merge, ops
 assert av.ROOT == TMP and av.ROOT != REAL
 PY = os.path.join(REAL, ".venv/bin/python")
 R = {}; fails = []
@@ -51,9 +57,9 @@ try:
     check("migrate_first_changes", len(c1) >= 13); check("migrate_rerun_noop", c2 == [])
     con = av.open_db(k)
     cols = {r[1] for r in con.execute("PRAGMA table_info(items)")}
-    check("migrate_columns", {"owner", "mac", "os", "source", "external_ids", "last_checkin", "encryption_status", "rpo_target_hours", "verified", "paused", "backup_status", "rpo_target_days"} <= cols)
-    check("migrate_tables", {"backup_history", "sources", "item_sources"} <= {r[0] for r in con.execute("select name from sqlite_master")})
-    check("schema_version", av.schema_version(con) == 2); con.close()
+    check("migrate_columns", {"owner", "mac", "os", "source", "external_ids", "last_checkin", "encryption_status", "rpo_target_hours", "verified", "paused", "backup_status", "rpo_target_days", "asset_tag", "os_version", "managed_by"} <= cols)
+    check("migrate_tables", {"backup_history", "sources", "item_sources", "reviews"} <= {r[0] for r in con.execute("select name from sqlite_master")})
+    check("schema_version", av.schema_version(con) == 3); con.close()
     check("migrate_audited_once", sum(a["action"] == "migrate" for a in av.read_audit(k)) == 1)
 
     # ---------- wrong passphrase fails cleanly
@@ -65,6 +71,8 @@ try:
 
     # ---------- start server
     env = dict(os.environ, ASSETVAULT_IDLE_SECONDS="1800")
+    for _secret_name in ("ASSETVAULT_GRAPH_SECRET", "ASSETVAULT_AD_PASSWORD", "ASSETVAULT_JAMF_SECRET", "ASSETVAULT_REST_TOKEN", "ASSETVAULT_REST_PASSWORD"):
+        env.pop(_secret_name, None)
     srv = subprocess.Popen([PY, os.path.join(BIN, "dashboard.py")], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
     uf = os.path.join(TMP, ".dashboard_url")
     for _ in range(100):
@@ -95,7 +103,7 @@ try:
     check("no_external_refs", b"https://" not in body and b"cdn" not in body.lower() and b"googleapis" not in body)
     check("csp_header", "default-src 'none'" in hd.get("Content-Security-Policy", ""))
     st, body, _ = req("/api/state"); S = json.loads(body)
-    check("empty_state", st == 200 and S["items"] == [] and S["sources"] == [])
+    check("empty_state", st == 200 and S["items"] == [] and S["sources"] == [] and S.get("reviews") == [])
     # write path
     st, b, _ = req("/api/item", {"name": "FAKE-TEST Laptop Alpha", "category": "Computers", "room": "Office", "serial": "FAKESERIAL1234", "replacement_value": "1200", "rpo_target_hours": "24", "owner": "Test Owner", "warranty_expiry": (now.date() + datetime.timedelta(days=20)).isoformat(), "encryption_status": "unencrypted"})
     check("add_item", st == 200); a = json.loads(b)["id"]
@@ -156,6 +164,63 @@ try:
     check("blobs_present_before_delete", all(os.path.exists(p) for p in paths))
     check("delete_attached", req(f"/api/item/{a}/delete", {"confirm_name": "FAKE-TEST Laptop Alpha"})[0] == 200)
     check("blobs_removed", all(not os.path.exists(p) for p in paths) and req("/api/blob/" + blob)[0] == 404 and req("/api/blob/" + rblob)[0] == 404)
+    st, b, _ = req("/api/export", {"kind": "csv"})
+    exported = json.loads(b)
+    exp_path = os.path.join(TMP, exported.get("path") or "missing")
+    check("export_api", st == 200 and exported.get("ok") and exported.get("kind") == "csv" and os.path.isfile(exp_path) and oct(os.stat(exp_path).st_mode & 0o777) == "0o600" and os.path.realpath(exp_path).startswith(os.path.realpath(os.path.join(TMP, "exports")) + os.sep))
+    st, b, _ = req("/api/item", {"name": "FAKE-TEST Sync Target", "category": "Computers", "room": "Office", "model": "SyncModel"})
+    check("sync_target_added", st == 200)
+    sync_target = json.loads(b)["id"]
+    fixture = {"rows": [{"hostname": "FAKE-TEST Sync Target", "model": "SyncModel", "serial": "SOFT9999XXXX"}]}
+    class _Fix(BaseHTTPRequestHandler):
+        def do_GET(self):
+            payload = json.dumps(fixture["rows"]).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+        def log_message(self, *args):
+            pass
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), _Fix)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    port = httpd.server_address[1]
+    con = av.open_db(k)
+    cur = con.execute(
+        "INSERT INTO sources(name, kind, connector, config, added, updated, skipped, not_seen) VALUES(?,?,?,?,0,0,0,0)",
+        ("FAKE REST", "REST", "generic_rest", json.dumps({
+            "url": "http://127.0.0.1:%d/devices" % port, "auth": "none", "allow_insecure": True,
+            "pagination": "none", "mapping": {"name": "hostname", "serial": "serial", "model": "model"},
+        })),
+    )
+    sid = cur.lastrowid
+    av.save_db(k, con); con.close()
+    before_ids = [i["id"] for i in json.loads(req("/api/state")[1])["items"]]
+    st, b, _ = req("/api/source/%d/sync" % sid, {})
+    synced = json.loads(b)
+    after_ids = [i["id"] for i in json.loads(req("/api/state")[1])["items"]]
+    check("sync_api", st == 200 and synced.get("ok") is True and synced.get("review", {}).get("id"))
+    check("sync_keeps_local", after_ids == before_ids and sync_target in after_ids and "SOFT9999XXXX" not in b.decode())
+    review_id = synced["review"]["id"]
+    st, b, _ = req("/api/review/%d/verify" % review_id, {"index": 0})
+    check("verify_api", st == 200 and json.loads(b).get("verified") is True)
+    st, b, _ = req("/api/review/%d/commit" % review_id, {})
+    check("commit_api", st == 200 and json.loads(b).get("ok") is True)
+    detail = json.loads(req("/api/item/%d" % sync_target)[1])
+    kept = detail["item"]
+    revealed = json.loads(req("/api/item/%d/serial" % sync_target)[1])["serial"]
+    check("commit_keeps_name", kept["name"] == "FAKE-TEST Sync Target" and kept.get("serial") is None and revealed == "SOFT9999XXXX" and "SOFT9999XXXX" not in json.dumps(detail))
+    fixture["rows"] = [{"hostname": "FAKE-TEST Fresh", "model": "OtherModel", "serial": "FRESH123456"}]
+    st, b, _ = req("/api/source/%d/sync" % sid, {})
+    again = json.loads(b)
+    check("sync_again", st == 200 and again.get("ok") is True and "FRESH123456" not in b.decode())
+    ids_before_discard = {i["id"] for i in json.loads(req("/api/state")[1])["items"]}
+    st, b, _ = req("/api/review/%d/discard" % again["review"]["id"], {})
+    names_after = [i["name"] for i in json.loads(req("/api/state")[1])["items"]]
+    ids_after_discard = {i["id"] for i in json.loads(req("/api/state")[1])["items"]}
+    check("discard_api", st == 200 and json.loads(b).get("ok") is True and ids_after_discard == ids_before_discard and "FAKE-TEST Fresh" not in names_after)
+    actions = {x["action"] for x in av.read_audit(k)}
+    check("api_audited", {"export", "sync", "verify_soft", "commit", "discard", "item_delete"} <= actions)
     raw = open(os.path.join(TMP, "vault.db.enc"), "rb").read()
     check("db_encrypted", b"SQLite format" not in raw and b"FAKE-TEST" not in raw)
     # ---------- lock.sh
@@ -170,13 +235,20 @@ try:
     stops = [x for x in av.read_audit(k) if x["action"] == "dashboard_stop"]
     check("idle_shutdown", srv2.returncode is not None and stops[-1]["detail"]["reason"] == "idle" and not os.path.exists(uf))
     # ---------- no plaintext anywhere in temp root
-    hits = []
+    hits, leaks = [], []
+    phrase = os.environ["ASSETVAULT_PASSPHRASE"].encode()
     for dp, _, fs in os.walk(TMP):
         for fn in fs:
             with open(os.path.join(dp, fn), "rb") as fh:
-                if b"SQLite format" in fh.read(): hits.append(fn)
+                data = fh.read()
+            if b"SQLite format" in data: hits.append(fn)
+            if phrase in data: leaks.append(os.path.join(dp, fn))
     check("no_plaintext_files", hits == [])
+    check("passphrase_not_on_disk", leaks == [])
 finally:
+    if "httpd" in dir() and locals().get("httpd"):
+        try: locals()["httpd"].shutdown()
+        except Exception: pass
     for pr in ("srv", "srv2"):
         if pr in dir() and locals()[pr].poll() is None: locals()[pr].kill()
     shutil.rmtree(TMP, ignore_errors=True)

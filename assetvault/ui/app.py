@@ -6,16 +6,19 @@ from urllib.parse import urlsplit, parse_qs
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "bin"))
 import avcore as av, avlogic as lg
+import ops
+from connectors.base import ConnectorError
+from errors import MergeError, OpsError
 
 IDLE_SECONDS = int(os.environ.get("ASSETVAULT_IDLE_SECONDS", "1800"))
 MAX_BODY = 25 * 1024 * 1024
 URL_FILE = os.path.join(av.ROOT, ".dashboard_url")
 PID_FILE = os.path.join(av.ROOT, ".dashboard.pid")
 EDITABLE = {"name": "text", "category": "cat", "room": "room", "brand": "text", "model": "text", "serial": "text",
-            "owner": "text", "mac": "text", "os": "text", "purchase_date": "date", "purchase_price": "num",
-            "current_value": "num", "replacement_value": "num", "condition": "text", "warranty_expiry": "date",
-            "warranty_provider": "text", "backup_method": "text", "rpo_target_hours": "int", "rpo_notes": "text",
-            "encryption_status": "text", "last_checkin": "date", "notes": "text"}
+            "owner": "text", "mac": "text", "os": "text", "asset_tag": "text", "os_version": "text", "managed_by": "text",
+            "purchase_date": "date", "purchase_price": "num", "current_value": "num", "replacement_value": "num",
+            "condition": "text", "warranty_expiry": "date", "warranty_provider": "text", "backup_method": "text",
+            "rpo_target_hours": "int", "rpo_notes": "text", "encryption_status": "text", "last_checkin": "date", "notes": "text"}
 
 class Bad(Exception): pass
 
@@ -28,8 +31,7 @@ def cfg(con):
     return {r["k"]: json.loads(r["v"]) for r in con.execute("SELECT k,v FROM config")}
 
 def mask(s):
-    s = (s or "").strip()
-    return ("•••• " + s[-4:]) if len(s) > 4 else ("••••" if s else "")
+    return lg.mask_serial(s)
 
 def history_map(con):
     m = {}
@@ -37,36 +39,46 @@ def history_map(con):
         m.setdefault(r["item_id"], []).append(dict(r))
     return m
 
-def item_view(r, hist, threshold, srcnames, t):
+def item_view(r, hist, threshold, srcnames, badges, t):
     d = dict(r)
     ls, la = lg.last_success(hist), lg.last_attempt(hist)
+    marks = badges.get(d["id"], [])
     out = {k: d.get(k) for k in ("id", "name", "room", "category", "owner", "source", "backup_method", "replacement_value",
                                  "warranty_expiry", "last_checkin", "encryption_status", "rpo_target_hours", "verified", "paused")}
     out.update(serial_masked=mask(d.get("serial")), has_serial=bool((d.get("serial") or "").strip()),
                rpo=lg.rpo_state(d, hist, t), strip=lg.day_strip(hist, 30, t, d),
                last_success=ls.isoformat() if ls else None, last_attempt=la.isoformat() if la else None,
                warranty=lg.warranty_status(d, t), flags=lg.completeness(d, threshold),
-               unencrypted=lg.is_unencrypted(d), sources=srcnames.get(d["id"], []))
+               unencrypted=lg.is_unencrypted(d), sources=srcnames.get(d["id"], []), badges=marks)
     return out
 
 def state_payload():
     con = db(); t = now(); c = cfg(con); hm = history_map(con)
-    srcn = {}
-    for r in con.execute("SELECT i.item_id, s.name FROM item_sources i JOIN sources s ON s.id=i.source_id"):
-        srcn.setdefault(r[0], []).append(r[1])
-    items = [item_view(r, hm.get(r["id"], []), c.get("receipt_photo_threshold"), srcn, t)
+    srcn, badges = {}, {}
+    for r in con.execute("SELECT i.item_id, s.name, s.kind, i.not_seen_at FROM item_sources i JOIN sources s ON s.id=i.source_id ORDER BY s.name"):
+        srcn.setdefault(r["item_id"], []).append(r["name"])
+        badges.setdefault(r["item_id"], []).append({"name": r["name"], "kind": r["kind"], "not_seen_at": r["not_seen_at"]})
+    items = [item_view(r, hm.get(r["id"], []), c.get("receipt_photo_threshold"), srcn, badges, t)
              for r in con.execute("SELECT * FROM items ORDER BY name COLLATE NOCASE")]
-    sources = [dict(r) for r in con.execute("SELECT * FROM sources ORDER BY name")]
+    sources = [dict(r) for r in con.execute(
+        "SELECT id, name, kind, connector, last_sync, added, updated, skipped, not_seen, health, detail FROM sources ORDER BY name")]
+    reviews = [merge_view(con, r) for r in con.execute("SELECT * FROM reviews WHERE status='staged' ORDER BY id")]
     con.close()
     return {"now": t.isoformat(timespec="seconds"), "config": {k: c.get(k) for k in ("rooms", "categories", "receipt_photo_threshold", "schema_version")},
-            "source_kinds": list(av.SOURCES_ENUM), "items": items, "sources": sources}
+            "source_kinds": list(av.SOURCES_ENUM), "items": items, "sources": sources, "reviews": reviews}
+
+def merge_view(con, row):
+    import merge
+    return merge.review_view(con, row)
 
 def item_detail(iid, reveal=False):
     con = db(); r = con.execute("SELECT * FROM items WHERE id=?", (iid,)).fetchone()
     if not r: con.close(); raise Bad("no such item")
     d = dict(r); t = now(); c = cfg(con)
     hist = [dict(h) for h in con.execute("SELECT * FROM backup_history WHERE item_id=? ORDER BY date DESC, id DESC", (iid,))]
-    srcs = [dict(s) for s in con.execute("SELECT s.*, i.seen_at FROM item_sources i JOIN sources s ON s.id=i.source_id WHERE i.item_id=?", (iid,))]
+    srcs = [dict(s) for s in con.execute(
+        """SELECT s.id, s.name, s.kind, s.health, s.last_sync, s.detail, i.seen_at, i.external_id, i.not_seen_at
+           FROM item_sources i JOIN sources s ON s.id=i.source_id WHERE i.item_id=?""", (iid,))]
     con.close()
     ls, la = lg.last_success(hist), lg.last_attempt(hist)
     tgt = lg.rpo_target_hours(d)
@@ -201,6 +213,28 @@ def _unlink_blob(bid):
     try: os.remove(path)
     except OSError: pass
 
+def _locked(fn):
+    with WLOCK:
+        return fn()
+
+def act_sync(sid):
+    return _locked(lambda: ops.sync_source(sid, key=STATE["key"]))
+
+def act_verify(rid, body):
+    try: index = int(body.get("index"))
+    except (TypeError, ValueError): raise Bad("index required")
+    verified = body.get("verified") if "verified" in body else None
+    return _locked(lambda: ops.verify_soft(rid, index, verified, key=STATE["key"]))
+
+def act_commit(rid):
+    return _locked(lambda: ops.commit_staged(rid, key=STATE["key"]))
+
+def act_discard(rid):
+    return _locked(lambda: ops.discard_staged(rid, key=STATE["key"]))
+
+def act_export(body):
+    return _locked(lambda: ops.export_inventory((body or {}).get("kind"), key=STATE["key"]))
+
 def act_delete(iid, body):
     blob_ids = []
     def fn(con):
@@ -308,6 +342,17 @@ class H(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(n) or b"{}")
             if not isinstance(body, dict): raise Bad("bad body")
             if sub == "/api/item": return self.send(200, act_add(body))
+            if sub == "/api/export": return self.send(200, act_export(body))
+            m = re.fullmatch(r"/api/source/(\d+)/sync", sub)
+            if m:
+                res = act_sync(int(m.group(1)))
+                return self.send(200 if res.get("ok") else 400, res)
+            m = re.fullmatch(r"/api/review/(\d+)/verify", sub)
+            if m: return self.send(200, act_verify(int(m.group(1)), body))
+            m = re.fullmatch(r"/api/review/(\d+)/commit", sub)
+            if m: return self.send(200, act_commit(int(m.group(1))))
+            m = re.fullmatch(r"/api/review/(\d+)/discard", sub)
+            if m: return self.send(200, act_discard(int(m.group(1))))
             m = re.fullmatch(r"/api/item/(\d+)/(edit|log_backup|verify|pause|attach|delete)", sub)
             if not m: return self.send(404, {"error": "not found"})
             iid, a = int(m.group(1)), m.group(2)
@@ -315,8 +360,8 @@ class H(BaseHTTPRequestHandler):
                  "verify": lambda: act_flag(iid, "verified", "mark_verified"), "pause": lambda: act_flag(iid, "paused", "pause"),
                  "attach": lambda: act_attach(iid, body), "delete": lambda: act_delete(iid, body)}[a]()
             self.send(200, r)
-        except Bad as e: self.send(400, {"error": str(e)})
-        except (ValueError, sqlite3.IntegrityError) as e: self.send(400, {"error": "invalid input"})
+        except (Bad, OpsError, MergeError, ConnectorError) as e: self.send(400, {"error": av.scrub(str(e))})
+        except (ValueError, sqlite3.IntegrityError): self.send(400, {"error": "invalid input"})
         except Exception as e: self.send(500, {"error": type(e).__name__})
 
 def _wfile(path, text):

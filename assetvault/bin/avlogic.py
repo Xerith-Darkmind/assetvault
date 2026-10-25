@@ -107,3 +107,8 @@ def warranty_status(item, now=None, window_days=60):
 
 def is_unencrypted(item):
     return (_g(item, "encryption_status") or "").strip().lower() in UNENCRYPTED
+
+def mask_serial(s, mark="••••"):
+    """Show only the last 4 characters of a serial. Blank stays blank."""
+    s = (s or "").strip()
+    return (mark + " " + s[-4:]) if len(s) > 4 else (mark if s else "")

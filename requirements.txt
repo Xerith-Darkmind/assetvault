@@ -1,3 +1,7 @@
 # Third-party packages imported by AssetVault (pinned to the tested versions).
 cryptography==50.0.2   # AES-256-GCM, scrypt fallback KDF (avcore.py)
 argon2-cffi==25.1.0    # Argon2id KDF (avcore.py; scrypt is used if absent)
+ldap3==2.9.1           # LDAPS reads for the AD connector (connectors/ad.py)
+openpyxl==3.1.5        # XLSX import (importers.py)
+reportlab==5.1.0       # insurance PDF export (exports.py)
+pillow==13.0.0         # photo thumbnails inside the PDF (exports.py)

@@ -47,13 +47,13 @@ mkdir -p "$ROOT"; mkdir -p "$ROOT/bin" "$ROOT/ui"
 # ---- code files (data files are never named here)
 copy_code() {   # $1 = overwrite (1) or only-if-missing (0)
   local f rel dst mode
-  for f in "$SRC"/assetvault/bin/*.py "$SRC"/assetvault/bin/*.sh "$SRC"/assetvault/ui/*; do
-    [[ -f "$f" ]] || continue
+  while IFS= read -r -d '' f; do
     rel="${f#"$SRC"/assetvault/}"; dst="$ROOT/$rel"
     [[ "$1" == 0 && -e "$dst" ]] && continue
+    mkdir -p "$(dirname "$dst")"
     mode=644; [[ -x "$f" ]] && mode=755
     install -m "$mode" "$f" "$dst.new.$$" && mv -f "$dst.new.$$" "$dst"
-  done
+  done < <(find "$SRC/assetvault/bin" "$SRC/assetvault/ui" -type f ! -name '*.pyc' ! -path '*/__pycache__/*' -print0)
   install -m 644 "$SRC/VERSION" "$ROOT/VERSION.new.$$" && mv -f "$ROOT/VERSION.new.$$" "$ROOT/VERSION"
 }
 
@@ -62,6 +62,7 @@ if [[ "$MODE" == update ]]; then
   copy_code 1
   find "$ROOT/bin" "$ROOT/ui" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true
   [[ -x "$ROOT/.venv/bin/python" ]] || echo "install.sh: warning: $ROOT/.venv missing; run ./install.sh to create it" >&2
+  echo "install.sh: --update does not install Python packages. If requirements.txt changed, run ./install.sh once without --update." >&2
   echo "AssetVault $VERSION code updated in $ROOT (vault data untouched)"
   exit 0
 fi
