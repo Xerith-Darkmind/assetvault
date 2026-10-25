@@ -4,10 +4,14 @@ vault.meta.json
 audit.failed_unlocks
 .dashboard_url
 .dashboard.pid
-blobs/
-exports/
-connectors/
-uploads/
+/blobs/
+/exports/
+/connectors/
+/uploads/
+/assetvault/blobs/
+/assetvault/exports/
+/assetvault/connectors/
+/assetvault/uploads/
 # Environment / build
 .venv/
 __pycache__/

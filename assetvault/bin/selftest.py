@@ -13,6 +13,18 @@ con = av.open_db(k2); r["db_roundtrip"] = con.execute("select count(*) from item
 con.execute("delete from items where name='__selftest__'"); con.execute("delete from sqlite_sequence"); av.save_db(k2, con)
 data = secrets.token_bytes(4096); bid = av.put_blob(k2, data); r["blob_roundtrip"] = av.get_blob(k2, bid) == data
 os.remove(os.path.join(av.BLOBS, bid + ".enc"))
+av.migrate(key)
+con = av.open_db(key)
+r["schema_v3"] = av.schema_version(con) == 3
+r["reviews_table"] = con.execute("select 1 from sqlite_master where type='table' and name='reviews'").fetchone() is not None
+con.close()
+secret = "graphsecret-" + secrets.token_hex(8)
+os.environ["ASSETVAULT_GRAPH_SECRET"] = secret
+av.audit(key, "selftest_scrub", detail={"note": secret, "actor_should_not_matter": secret})
+aud = json.dumps(av.read_audit(key))
+r["secret_not_in_audit"] = secret not in aud and "[redacted]" in aud
+r["secret_not_in_dbfile"] = secret.encode() not in open(av.DB, "rb").read() and secret.encode() not in open(av.AUDIT, "rb").read()
+del os.environ["ASSETVAULT_GRAPH_SECRET"]
 raw = open(av.DB,"rb").read(); r["db_not_plaintext"] = b"SQLite format" not in raw and b"Office" not in raw
 os.environ["ASSETVAULT_PASSPHRASE"] = "wrong-" + secrets.token_hex(8)
 try: av.unlock(); r["wrong_pass_rejected"] = False

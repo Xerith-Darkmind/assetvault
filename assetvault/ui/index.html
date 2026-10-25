@@ -45,6 +45,9 @@ dl{display:grid;grid-template-columns:140px 1fr;gap:2px 10px;margin:0;font:12px 
 .audit{max-height:200px;overflow:auto;font:11px var(--mono)}.audit div{border-bottom:1px solid #111a24;padding:2px 0}.audit span{color:var(--dim)}
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px}
 .banner{padding:6px 10px;font:11px var(--mono);margin-bottom:8px}.banner.red{background:#2a070c;color:var(--bad);border:1px solid #5a1620}.banner.stale{background:#1a1300;color:var(--am);border:1px solid #5a3e00}
+.mrow{padding:6px 8px;margin:4px 0;font:12px var(--mono)}.m-exact{background:#e7eef5;color:#102028}.m-soft{background:#2a2108;color:var(--am);border:1px solid #5a3e00}
+.m-new{background:#2a070c;color:var(--bad);border:1px solid #5a1620}.m-miss{background:#141a22;color:var(--dim);border:1px solid #2a3542}
+.srcbadges{display:flex;flex-wrap:wrap;gap:3px}
 .emptybox{border:1px dashed var(--line);padding:40px;text-align:center;color:var(--dim);font:12px var(--mono)}
 .modal{position:fixed;inset:0;background:#000a;display:none;align-items:flex-start;justify-content:center;z-index:20;padding-top:6vh}.modal.on{display:flex}
 .modal .box{background:var(--bg2);border:1px solid var(--cy);box-shadow:0 0 30px #00e5ff22;padding:16px;width:min(900px,94vw);max-height:86vh;overflow:auto}
@@ -54,7 +57,7 @@ dl{display:grid;grid-template-columns:140px 1fr;gap:2px 10px;margin:0;font:12px 
 </style></head><body>
 <header><div class="logo">ASSET<b>VAULT</b></div>
 <nav><a href="#inv" data-view="inv" class="on">Inventory</a><a href="#sources" data-view="sources">Sources</a><a href="#merge" data-view="merge">Merge review</a></nav>
-<div class="sp"></div><button id="btnAdd">+ Add</button><button class="amber" data-export="CSV">Export CSV</button><button class="amber" data-export="PDF">Export PDF</button>
+<div class="sp"></div><button id="btnAdd">+ Add</button><button class="amber" data-export="csv">Export CSV</button><button class="amber" data-export="pdf">Export PDF</button><button class="amber" data-export="pdf-redacted">Export PDF redacted</button>
 <span class="lock" title="Decrypted in memory only">unlocked · 127.0.0.1</span></header>
 <main>
 <section id="v-inv">
@@ -92,7 +95,9 @@ const SQ_LBL={success:"success",partial:"partial",failed:"failed",no_result:"no 
 const daysSince=s=>s?(Date.now()-new Date(s).getTime())/864e5:Infinity;
 async function load(poll){try{S=await api("api/state",undefined,poll);render()}catch(e){toast("load failed: "+e.message,1)}}
 function opts(sel,label,arr){const cur=sel.value;sel.innerHTML=`<option value="">all</option>`+arr.map(v=>`<option>${esc(v)}</option>`).join("");sel.value=arr.includes(cur)?cur:""}
-function render(){const c=S.config;opts($("fRoom"),"room",c.rooms||[]);opts($("fCat"),"cat",c.categories||[]);opts($("fSrc"),"src",S.source_kinds);
+function sourceOpts(){const names=(S.sources||[]).map(s=>s.name).filter(Boolean);return [...new Set([...(S.source_kinds||[]),...names])]}
+function sourceHit(i,want){if(!want)return true;if((i.source||"Manual")===want)return true;return (i.badges||[]).some(b=>b.name===want||b.kind===want)}
+function render(){const c=S.config;opts($("fRoom"),"room",c.rooms||[]);opts($("fCat"),"cat",c.categories||[]);opts($("fSrc"),"src",sourceOpts());
  opts($("fRpo"),"rpo",["Met","At risk","Breached","No data","Not scheduled"]);renderTiles();renderGrid();renderSources();renderMerge()}
 function tiles(){const it=S.items,n=s=>it.filter(i=>i.rpo===s).length;return[
  ["total","Total devices",it.length,""],["Met","RPO met",n("Met"),"ok"],["At risk","RPO at risk",n("At risk"),"am"],["Breached","RPO breached",n("Breached"),"bad"],
@@ -101,7 +106,7 @@ function tiles(){const it=S.items,n=s=>it.filter(i=>i.rpo===s).length;return[
 function renderTiles(){$("tiles").innerHTML=tiles().map(([k,l,v,c])=>`<div class="tile ${c} ${tileF===k?"on":""}" data-tile="${k}"><div class="k">${esc(l)}</div><div class="v">${esc(v)}</div></div>`).join("")}
 function filtered(){const q=$("fQ").value.trim().toLowerCase(),N=+$("fNoSuccN").value||7;return S.items.filter(i=>{
  if($("fRoom").value&&i.room!==$("fRoom").value)return false;if($("fCat").value&&i.category!==$("fCat").value)return false;
- if($("fSrc").value&&(i.source||"Manual")!==$("fSrc").value)return false;if($("fRpo").value&&i.rpo!==$("fRpo").value)return false;
+ if(!sourceHit(i,$("fSrc").value))return false;if($("fRpo").value&&i.rpo!==$("fRpo").value)return false;
  if($("fNoSucc").checked&&!(daysSince(i.last_success)>N))return false;if($("fCheckin").checked&&!(i.last_checkin&&daysSince(i.last_checkin)>=14))return false;
  if($("fWarr").checked&&i.warranty!=="expiring")return false;if($("fUnenc").checked&&!i.unencrypted)return false;
  if($("fNoVal").checked&&i.replacement_value!=null)return false;if($("fNoSer").checked&&!i.flags.includes("missing serial"))return false;
@@ -111,9 +116,11 @@ function filtered(){const q=$("fQ").value.trim().toLowerCase(),N=+$("fNoSuccN").
  if(q&&![i.name,i.room,i.category,i.owner,i.source,i.backup_method,i.serial_masked,i.encryption_status,...i.sources].join(" ").toLowerCase().includes(q))return false;
  return true})}
 function strip(i){return `<span class="strip">`+i.strip.map(d=>`<span class="sq ${d.state}" title="${esc(d.date)}: ${esc(SQ_LBL[d.state])}${d.results.length>1?" ("+esc(d.results.join(", "))+")":""}"></span>`).join("")+`</span>`}
+function badgeHtml(i){const list=(i.badges&&i.badges.length)?i.badges:[{name:i.source||"Manual",kind:i.source||"Manual",not_seen_at:null}];
+ return `<span class="srcbadges">`+list.map(b=>`<span class="b ${b.not_seen_at?"b-gr":"b-cy"}" title="${esc(b.kind||"")}">${esc(b.name)}${b.not_seen_at?" · not seen":""}</span>`).join(" ")+`</span>`}
 function rowHtml(i){const w=WAR[i.warranty]||WAR.unknown;const ser=i.has_serial?`<span class="serial">${esc(revealed[i.id]||i.serial_masked)}<button data-reveal="${i.id}">${revealed[i.id]?"hide":"show"}</button></span>`:`<span class="dim">—</span>`;
  return `<tr class="row ${openId===i.id?"open":""}" data-id="${i.id}"><td class="name">${esc(i.name)}${i.verified?` <span class="b b-cy" title="verified">✓</span>`:""}${i.paused?` <span class="b b-gr">paused</span>`:""}</td><td>${esc(i.room||"—")}</td><td>${esc(i.category||"—")}</td>
- <td><span class="b b-cy">${esc(i.source||"Manual")}</span></td><td>${ser}</td><td>${esc(i.backup_method||"—")}</td><td>${strip(i)}</td>
+ <td>${badgeHtml(i)}</td><td>${ser}</td><td>${esc(i.backup_method||"—")}</td><td>${strip(i)}</td>
  <td><span class="b ${RPO_CLS[i.rpo]}">${esc(i.rpo)}</span></td><td>${esc(dshort(i.last_success))}</td><td><span class="b ${w[1]}" title="${esc(i.warranty_expiry||"no expiry recorded")}">${w[0]}</span></td>
  <td class="num">${money(i.replacement_value)}</td><td>${i.flags.length?`<span class="b b-am" title="${esc(i.flags.join(", "))}">${i.flags.length} missing</span>`:`<span class="b b-ok">complete</span>`}</td></tr>`+
  (openId===i.id?`<tr class="detail"><td colspan="12" id="det-${i.id}"><span class="dim">decrypting…</span></td></tr>`:"")}
@@ -124,7 +131,7 @@ function renderGrid(){const rows=filtered(),g=$("grp").value;let h="";
   [...m.keys()].sort().forEach(k=>{const a=m.get(k);h+=`<tr class="grp"><td colspan="12">${esc(k)}<span>${a.length} device${a.length==1?"":"s"} · ${money(a.reduce((s,i)=>s+(i.replacement_value||0),0))}</span></td></tr>`+a.map(rowHtml).join("")})}
  else h=rows.map(rowHtml).join("");
  $("grid").innerHTML=h;$("cnt").textContent=`${rows.length} of ${S.items.length} shown`;if(openId&&rows.some(r=>r.id===openId))loadDetail(openId)}
-const FIELDS=[["name","Name"],["category","Category","cat"],["room","Room","room"],["owner","Owner"],["brand","Brand"],["model","Model"],["serial","Serial"],["mac","MAC"],["os","OS"],
+const FIELDS=[["name","Name"],["category","Category","cat"],["room","Room","room"],["owner","Owner"],["brand","Brand"],["model","Model"],["serial","Serial"],["asset_tag","Asset tag"],["mac","MAC"],["os","OS"],["os_version","OS version"],["managed_by","Managed by"],
  ["purchase_date","Purchase date","date"],["purchase_price","Purchase price","num"],["current_value","Current value","num"],["replacement_value","Replacement value","num"],["condition","Condition"],
  ["warranty_expiry","Warranty expiry","date"],["warranty_provider","Warranty provider"],["backup_method","Backup method"],["rpo_target_hours","RPO target (hours)","int"],["rpo_notes","RPO notes"],
  ["encryption_status","Encryption status"],["last_checkin","Last check-in","date"],["notes","Notes","area"]];
@@ -135,7 +142,8 @@ async function loadDetail(id){let d;try{d=await api("api/item/"+id)}catch(e){con
   (it.backup_status||it.rpo_target_days?`<dt class="dim">legacy status</dt><dd class="dim">${esc(it.backup_status||"—")} / ${esc(it.rpo_target_days??"—")} d</dd>`:"")+`<dt>Created</dt><dd>${esc(dshort(it.created_at))}</dd><dt>Updated</dt><dd>${esc(dshort(it.updated_at))}</dd>`;
  const ph=it.photo_refs.length?`<div class="thumbs">`+it.photo_refs.map(p=>`<a href="${BASE}api/blob/${esc(p.id)}" target="_blank" rel="noopener"><img src="${BASE}api/blob/${esc(p.id)}" alt="${esc(p.name||"photo")}" title="${esc(p.name||p.id)}"></a>`).join("")+`</div>`:`<span class="dim">No photos.</span>`;
  const rc=it.receipt_refs.length?it.receipt_refs.map(p=>`<div><a href="${BASE}api/blob/${esc(p.id)}" target="_blank" rel="noopener">${esc(p.name||p.id)}</a> <span class="dim">${esc(dshort(p.added))}</span></div>`).join(""):`<span class="dim">No receipts.</span>`;
- const src=d.sources.length?d.sources.map(s=>`<div><span class="b b-cy">${esc(s.name)}</span> <span class="dim">${esc(s.kind||"")} · seen ${esc(dshort(s.seen_at))} · health ${esc(s.health||"—")}</span></div>`).join(""):`<span class="dim">Manual entry only (no connector or import has seen this device).</span>`;
+ const src=d.sources.length?d.sources.map(s=>{const when=s.not_seen_at?`not seen ${dshort(s.not_seen_at)}`:`seen ${dshort(s.seen_at)}`;const cls=s.not_seen_at?"b-gr":"b-cy";
+  return `<div><span class="b ${cls}">${esc(s.name)}</span> <span class="dim">${esc(s.kind||"")} · ${esc(when)} · health ${esc(s.health||"—")}${s.external_id?" · "+esc(s.external_id):""}</span></div>`}).join(""):`<span class="dim">Manual entry only (no connector or import has seen this device).</span>`;
  const hist=d.history.length?d.history.slice(0,15).map(h=>`<div><span class="sq ${h.result==="manual"?"success":h.result}"></span> ${esc(dshort(h.date))} ${esc(h.result)} <span>${esc(h.note||"")}</span></div>`).join(""):`<span class="dim">No backup results logged.</span>`;
  const aud=d.audit.length?d.audit.map(a=>`<div><span>${esc(dshort(a.ts))}</span> ${esc(a.action)} <span>${esc(a.detail?JSON.stringify(a.detail):"")}</span></div>`).join(""):`<span class="dim">No audit entries.</span>`;
  const vr=r.variance_hours==null?"—":(r.variance_hours>0?"+":"")+r.variance_hours+" h";
@@ -170,18 +178,37 @@ function delForm(it){modal("DELETE ITEM",`<p>This permanently removes <b>${esc(i
 function attach(id,kind){const inp=document.createElement("input");inp.type="file";inp.accept=kind==="photo"?"image/*":"image/*,application/pdf";
  inp.onchange=()=>{const f=inp.files[0];if(!f)return;if(f.size>18*1024*1024)return toast("file too large (18 MB max)",1);const rd=new FileReader();
   rd.onload=async()=>{const b64=String(rd.result).split(",")[1]||"";try{await api(`api/item/${id}/attach`,{kind,name:f.name,mime:f.type,data:b64});toast(kind+" encrypted and attached");load()}catch(e){toast(e.message,1)}};rd.readAsDataURL(f)};inp.click()}
-function renderSources(){const s=S.sources;const D30=30;
- $("srcBody").innerHTML=!s.length?`<div class="emptybox">No imports or connectors yet. Manual entry only.</div>`:`<div class="cards">`+s.map(x=>{const failing=/fail|error|red|down/i.test(x.health||"");const stale=daysSince(x.last_sync)>D30;
-  return `<div class="panel">${failing?`<div class="banner red">HEALTH FAILING · ${esc(x.detail||x.health)}</div>`:""}${stale?`<div class="banner stale">STALE · last sync ${x.last_sync?"over 30 days ago":"never"}</div>`:""}
-  <h4>${esc(x.name)}</h4><dl><dt>Kind</dt><dd>${esc(x.kind||"—")}</dd><dt>Last sync</dt><dd>${esc(dshort(x.last_sync))}</dd><dt>Added</dt><dd>${esc(x.added??0)}</dd><dt>Updated</dt><dd>${esc(x.updated??0)}</dd><dt>Skipped</dt><dd>${esc(x.skipped??0)}</dd><dt>Health</dt><dd>${esc(x.health||"—")}</dd><dt>Detail</dt><dd>${esc(x.detail||"—")}</dd></dl></div>`}).join("")+`</div>`}
-function renderMerge(){const imp=S.sources.filter(x=>(x.kind||"").toLowerCase()!=="manual");
- $("mergeBody").innerHTML=!imp.length?`<div class="emptybox">Merge review appears after the first CSV import or connector sync. No imports yet.</div>`:`<div class="emptybox">No merge candidates pending. (Merge review will list possible duplicates from ${imp.length} source${imp.length==1?"":"s"} here.)</div>`}
+function renderSources(){const s=S.sources||[];const pending=new Set((S.reviews||[]).map(r=>r.source_id));
+ $("srcBody").innerHTML=!s.length?`<div class="emptybox">No imports or connectors yet. Manual entry only.</div>`:`<div class="cards">`+s.map(x=>{
+  const failing=!!(x.health&&x.health!=="OK");const stale=!!(x.last_sync&&daysSince(x.last_sync)>30);
+  return `<div class="panel">${failing?`<div class="banner red">HEALTH FAILING · ${esc(x.detail||x.health)}</div>`:""}${stale?`<div class="banner stale">STALE · last sync over 30 days ago</div>`:""}${pending.has(x.id)?`<div class="banner stale">REVIEW PENDING</div>`:""}
+  <h4>${esc(x.name)}</h4><dl><dt>Kind</dt><dd>${esc(x.kind||"—")}</dd><dt>Connector</dt><dd>${esc(x.connector||"—")}</dd><dt>Last sync</dt><dd>${esc(dshort(x.last_sync))}</dd>
+  <dt>Added</dt><dd>${esc(x.added??0)}</dd><dt>Updated</dt><dd>${esc(x.updated??0)}</dd><dt>Skipped</dt><dd>${esc(x.skipped??0)}</dd><dt>Not seen</dt><dd>${esc(x.not_seen??0)}</dd>
+  <dt>Health</dt><dd>${esc(x.health||"—")}</dd><dt>Detail</dt><dd>${esc(x.detail||"—")}</dd></dl>
+  ${x.connector?`<div class="actions"><button data-sync="${x.id}">Sync now</button></div>`:""}</div>`}).join("")+`</div>`}
+function devLine(p){const d=p.incoming||{};const bits=[d.name,d.model,d.serial,d.external_id].filter(Boolean);return esc(bits.join(" · ")||"unnamed device")}
+function renderMerge(){const rows=S.reviews||[];
+ if(!rows.length){$("mergeBody").innerHTML=`<div class="emptybox">No merge candidates pending. Sync a source or import a file to stage a review.</div>`;return}
+ $("mergeBody").innerHTML=rows.map(rv=>{const c=rv.counts||{};const map=rv.mapping?Object.keys(rv.mapping).map(k=>k+" → "+rv.mapping[k]).join(", "):"";
+  const exact=(rv.exact||[]).map(p=>`<div class="mrow m-exact">exact · ${esc(p.match_on||"")} · ${esc(p.local_name||"")} ← ${devLine(p)}</div>`).join("");
+  const soft=(rv.soft||[]).map(p=>`<div class="mrow m-soft">soft · needs verify · ${esc(p.local_name||"")} ← ${devLine(p)} <button data-verify data-review="${rv.id}" data-index="${p.index}">${p.verified?"Verified":"Verify"}</button></div>`).join("");
+  const neu=(rv.new||[]).map(p=>`<div class="mrow m-new">new · ${devLine(p)}</div>`).join("");
+  const miss=(rv.not_seen||[]).map(p=>`<div class="mrow m-miss">not seen · ${esc(p.local_name||p.local_id)} · ${esc(dshort(p.not_seen_at))}</div>`).join("");
+  return `<div class="panel" style="margin-bottom:10px"><h4>${esc(rv.source_name||"source")} · ${esc(rv.detected||rv.kind||"review")}</h4>
+   <p class="dim">${c.exact||0} exact · ${c.soft||0} soft · ${c.new||0} new · ${c.not_seen||0} not seen · ${c.skipped||0} skipped${map?" · "+esc(map):""}</p>
+   ${exact}${soft}${neu}${miss}
+   <div class="actions"><button data-commit="${rv.id}">Commit</button><button class="danger" data-discard="${rv.id}">Discard</button></div></div>`}).join("")}
 function view(v){["inv","sources","merge"].forEach(x=>$("v-"+x).classList.toggle("hidden",x!==v));document.querySelectorAll("nav a").forEach(a=>a.classList.toggle("on",a.dataset.view===v))}
 document.addEventListener("click",async e=>{const t=e.target;
  if(t.closest("[data-close]")){closeModal();return}if(t===$("modal")){closeModal();return}
  const tl=t.closest("[data-tile]");if(tl){const k=tl.dataset.tile;tileF=(k==="total"||tileF===k)?null:k;renderTiles();renderGrid();return}
  const nv=t.closest("nav a");if(nv){view(nv.dataset.view);return}
- const ex=t.closest("[data-export]");if(ex){if(confirm(`Exports are UNENCRYPTED. A ${ex.dataset.export} export writes readable inventory data to disk outside the vault. Continue?`))alert("Run export from chat. (The dashboard doesn't write exports.)");return}
+ const ex=t.closest("[data-export]");if(ex){const kind=ex.dataset.export;if(!confirm(`Exports are UNENCRYPTED. A ${kind} export writes readable inventory data to disk outside the vault. Continue?`))return;
+  try{const r=await api("api/export",{kind});toast("wrote "+(r.filename||kind)+" ("+(r.bytes||0)+" bytes)")}catch(er){toast(er.message,1)}return}
+ const sy=t.closest("[data-sync]");if(sy){try{const r=await api("api/source/"+sy.dataset.sync+"/sync",{});toast(r.ok?"review staged":(r.error||"sync failed"));if(r.ok)view("merge")}catch(er){toast(er.message,1)}load();return}
+ const vf=t.closest("[data-verify]");if(vf){try{await api("api/review/"+vf.dataset.review+"/verify",{index:+vf.dataset.index});load()}catch(er){toast(er.message,1)}return}
+ const cm=t.closest("[data-commit]");if(cm){try{await api("api/review/"+cm.dataset.commit+"/commit",{});toast("committed");load()}catch(er){toast(er.message,1)}return}
+ const ds=t.closest("[data-discard]");if(ds){try{await api("api/review/"+ds.dataset.discard+"/discard",{});toast("discarded");load()}catch(er){toast(er.message,1)}return}
  const rv=t.closest("[data-reveal]");if(rv){e.stopPropagation();const id=+rv.dataset.reveal;if(revealed[id]){delete revealed[id];renderGrid();return}
   try{const r=await api(`api/item/${id}/serial`);revealed[id]=r.serial;renderGrid()}catch(er){toast(er.message,1)}return}
  const ac=t.closest("[data-act]");if(ac){const id=+ac.dataset.id,a=ac.dataset.act;const it=$("det-"+id)&&$("det-"+id)._item;
