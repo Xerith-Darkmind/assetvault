@@ -1,5 +1,5 @@
 """Connector, import, merge, export, and migration tests. No live network."""
-import os, sys, json, csv, secrets, tempfile, shutil, subprocess, socket, sqlite3, uuid, base64
+import os, sys, json, csv, secrets, tempfile, shutil, subprocess, socket, sqlite3, uuid, base64, fcntl
 
 # This file lives at <repo>/assetvault/bin/ when run from a checkout, and at
 # <ASSETVAULT_ROOT>/bin/ after install.sh. The repo root is the directory that
@@ -450,9 +450,13 @@ try:
     script.on("/api/v2/mobile-devices", js(200, {"totalCount": 1, "results": [{"mobileDeviceId": 9, "general": {"displayName": "Phone", "osVersion": "18"}, "hardware": {"serialNumber": "MOB123456"}, "security": {"dataProtected": True}}]}))
     conn = JamfConnector({"url": "https://contoso.jamfcloud.com/ignored", "client_id": "jamf-app"}, env={"ASSETVAULT_JAMF_SECRET": JAMF_PW}, send=script.send)
     rows = list(conn.pull())
+    mobile_urls = [u for u in script.urls if "/api/v2/mobile-devices/detail" in u]
     check("jamf_fallback_and_page", len(rows) == 151 and rows[0]["external_id"] == "computer:0" and rows[0]["encryption_status"] == "encrypted"
-          and rows[-1]["external_id"] == "mobile:9" and rows[-1]["brand"] == "Apple"
+          and rows[-1]["external_id"] == "mobile:9" and rows[-1]["brand"] == "Apple" and rows[-1]["serial"] == "MOB123456"
+          and rows[-1]["name"] == "Phone" and rows[-1]["encryption_status"] == "encrypted"
           and any("/api/v3/computers-inventory" in u and "page=1" in u for u in script.urls)
+          and len(mobile_urls) == 1
+          and all(part in mobile_urls[0] for part in ("section=GENERAL", "section=HARDWARE", "section=USER_AND_LOCATION", "section=SECURITY"))
           and not any("recovery" in u.lower() for u in script.urls) and JAMF_PW not in json.dumps(rows))
     script = Script()
     script.on("/api/oauth/token", js(401, {"error": JAMF_PW}))
@@ -789,6 +793,66 @@ try:
     check("cli_rejects_secret", proc.returncode == 1 and SECRET not in proc.stdout and SECRET not in proc.stderr and "secret" in proc.stdout)
     proc = subprocess.run(cli_base + ["sync", "missing-source"], env=cli_env, cwd=cli_cwd, capture_output=True, text=True, timeout=60)
     check("cli_unknown", proc.returncode == 1 and "unknown source" in proc.stdout and "Traceback" not in proc.stderr)
+
+    # ---------- one writer for the vault file
+    def _lock_busy():
+        path = os.path.join(VAULT, ".vault.lock")
+        fd = os.open(path, os.O_RDWR)
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            return False
+        finally:
+            os.close(fd)
+    with av.vault_lock():
+        inner = False
+        with av.vault_lock():
+            inner = _lock_busy()
+        held = _lock_busy()
+    check("vault_lock_reentrant", inner and held)
+    check("vault_lock_released", _lock_busy() is False)
+    holder = {"held": None}
+    def lock_build(name, config, **kwargs):
+        class Spy:
+            notes = []
+            def validate(self):
+                return None
+            def test(self):
+                return {"health": "OK", "devices": []}
+            def pull(self, limit=None):
+                holder["held"] = _lock_busy()
+                return [device(name="Lock PC", serial="LOCK123456", source="REST")]
+        return Spy()
+    connectors.build = lock_build
+    try:
+        linked = ops.connect_source("generic_rest", {"url": "https://devices.example/locked", "auth": "none", "mapping": {"name": "hostname"}}, display_name="Lock REST", key=key)
+        check("lock_source_saved", linked["ok"] is True)
+        # connect's test() does not pull, so the flag is still empty until sync
+        holder["held"] = None
+        ops.sync_source("Lock REST", key=key)
+    finally:
+        connectors.build = real_build
+    check("sync_holds_vault_lock", holder["held"] is True)
+    import importlib.util
+    _app_path = os.path.join(os.path.dirname(BIN), "ui", "app.py")
+    _spec = importlib.util.spec_from_file_location("av_dashboard_app_lock", _app_path)
+    _dash = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_dash)
+    _dash.STATE["key"] = key
+    _saved = {"held": None}
+    _real_save = av.save_db
+    def _spy_save(dbkey, con):
+        _saved["held"] = _lock_busy()
+        return _real_save(dbkey, con)
+    av.save_db = _spy_save
+    try:
+        added = _dash.act_add({"name": "lock-probe", "category": "Computers", "room": "Office"})
+    finally:
+        av.save_db = _real_save
+    check("dashboard_write_holds_vault_lock", added.get("id") and _saved["held"] is True)
 
     # ---------- install.sh --update keeps a vault byte-for-byte
     # Skipped from an installed root: install.sh is not copied there.

@@ -121,13 +121,14 @@ def clean(field, val, c):
     except (TypeError, ValueError): raise Bad(f"{field}: invalid number")
 
 def write(fn):
-    """open fresh copy -> mutate -> save_db -> audit. Serialized by WLOCK."""
+    """open fresh copy -> mutate -> save_db -> audit. Serialized by WLOCK and the vault file lock."""
     with WLOCK:
-        con = db()
-        try:
-            res, action, iid, detail = fn(con)
-            av.save_db(STATE["key"], con)
-        finally: con.close()
+        with av.vault_lock():
+            con = db()
+            try:
+                res, action, iid, detail = fn(con)
+                av.save_db(STATE["key"], con)
+            finally: con.close()
         av.audit(STATE["key"], action, iid, detail)
         return res
 
@@ -192,16 +193,17 @@ def act_attach(iid, body):
     mime = str(body.get("mime") or "application/octet-stream")[:100]
     name = str(body.get("name") or "")[:200]
     with WLOCK:
-        con = db()
-        try:
-            get_item(con, iid)
-            bid = av.put_blob(STATE["key"], data); del data
-            col = kind + "_refs"
-            refs = lg.refs(con.execute(f"SELECT {col} FROM items WHERE id=?", (iid,)).fetchone()[0])
-            refs.append({"id": bid, "name": name, "mime": mime, "added": av.now()})
-            con.execute(f"UPDATE items SET {col}=?, updated_at=? WHERE id=?", (json.dumps(refs), av.now(), iid))
-            av.save_db(STATE["key"], con)
-        finally: con.close()
+        with av.vault_lock():
+            con = db()
+            try:
+                get_item(con, iid)
+                bid = av.put_blob(STATE["key"], data); del data
+                col = kind + "_refs"
+                refs = lg.refs(con.execute(f"SELECT {col} FROM items WHERE id=?", (iid,)).fetchone()[0])
+                refs.append({"id": bid, "name": name, "mime": mime, "added": av.now()})
+                con.execute(f"UPDATE items SET {col}=?, updated_at=? WHERE id=?", (json.dumps(refs), av.now(), iid))
+                av.save_db(STATE["key"], con)
+            finally: con.close()
         av.audit(STATE["key"], "attach_" + kind, iid, {"blob": bid})
     return {"id": bid}
 
