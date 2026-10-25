@@ -1,0 +1,3 @@
+# Third-party packages imported by AssetVault (pinned to the tested versions).
+cryptography==50.0.2   # AES-256-GCM, scrypt fallback KDF (avcore.py)
+argon2-cffi==25.1.0    # Argon2id KDF (avcore.py; scrypt is used if absent)

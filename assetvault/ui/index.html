@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer"><link rel="icon" href="data:,"><title>AssetVault // Inventory</title>
+<style>
+:root{--bg:#07090c;--bg2:#0c1016;--bg3:#111821;--line:#1b2633;--txt:#c9d4df;--dim:#6b7c8f;--cy:#00e5ff;--am:#ffb000;--ok:#19d27a;--bad:#ff3b4e;--gray:#3a4654;
+--mono:ui-monospace,"JetBrains Mono","SFMono-Regular",Menlo,Consolas,"Liberation Mono",monospace;--sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+*{box-sizing:border-box}html,body{margin:0;background:var(--bg);color:var(--txt);font:13px/1.4 var(--sans)}
+a{color:var(--cy)}button,input,select,textarea{font:12px var(--mono);color:var(--txt);background:var(--bg2);border:1px solid var(--line);border-radius:3px;padding:4px 7px}
+button{cursor:pointer;color:var(--cy);border-color:#0b4a55;background:#06161b}button:hover{background:#0a2730;box-shadow:0 0 8px #00e5ff33}
+button.amber{color:var(--am);border-color:#5a3e00;background:#1a1300}button.danger{color:var(--bad);border-color:#5a1620;background:#1a0709}
+input:focus,select:focus,textarea:focus{outline:1px solid var(--cy)}
+header{display:flex;align-items:center;gap:18px;padding:10px 18px;border-bottom:1px solid var(--line);background:linear-gradient(#0a0e13,#07090c);position:sticky;top:0;z-index:5}
+.logo{font:700 15px var(--mono);letter-spacing:2px;color:var(--cy);text-shadow:0 0 10px #00e5ff66}.logo b{color:var(--am)}
+nav a{font:12px var(--mono);color:var(--dim);text-decoration:none;margin-right:14px;text-transform:uppercase;letter-spacing:1px}nav a.on{color:var(--cy);border-bottom:1px solid var(--cy)}
+.sp{flex:1}.lock{font:11px var(--mono);color:var(--ok)}.lock:before{content:"● "}
+main{padding:14px 18px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:12px}
+.tile{background:var(--bg2);border:1px solid var(--line);border-left:2px solid var(--cy);padding:8px 10px;cursor:pointer;user-select:none}
+.tile:hover{border-color:var(--cy)}.tile.on{background:#062027;box-shadow:inset 0 0 0 1px var(--cy)}
+.tile .k{font:10px var(--mono);color:var(--dim);text-transform:uppercase;letter-spacing:1px}.tile .v{font:600 20px var(--mono);color:#e8f4ff;margin-top:2px}
+.tile.am{border-left-color:var(--am)}.tile.bad{border-left-color:var(--bad)}.tile.ok{border-left-color:var(--ok)}.tile.gr{border-left-color:var(--gray)}
+.filters{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;background:var(--bg2);border:1px solid var(--line);padding:8px 10px;margin-bottom:10px}
+.filters label{font:11px var(--mono);color:var(--dim);display:flex;align-items:center;gap:4px}.filters input[type=number]{width:52px}
+.bar{display:flex;gap:8px;align-items:center;margin-bottom:8px}.bar .cnt{font:11px var(--mono);color:var(--dim)}
+table{width:100%;border-collapse:collapse;font:12px var(--mono)}
+th{position:sticky;top:49px;background:var(--bg3);color:var(--dim);font-weight:500;text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:1px;padding:6px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:5px 6px;border-bottom:1px solid #111a24;white-space:nowrap;vertical-align:middle}
+tr.row{cursor:pointer}tr.row:hover td{background:#0b1218}tr.row.open td{background:#0a161c}
+tr.grp td{background:#0d141c;color:var(--am);font-weight:600;border-top:1px solid var(--line)}tr.grp span{color:var(--dim);font-weight:400;margin-left:12px}
+td.num{text-align:right}.name{color:#e8f4ff;font-family:var(--sans);font-weight:600}
+.empty td{padding:40px;text-align:center;color:var(--dim);font-family:var(--mono)}
+.b{display:inline-block;padding:1px 6px;border-radius:2px;font:10px var(--mono);border:1px solid;letter-spacing:.5px}
+.b-ok{color:var(--ok);border-color:#0e5a37;background:#03170e}.b-am{color:var(--am);border-color:#5a3e00;background:#1a1300}
+.b-bad{color:var(--bad);border-color:#5a1620;background:#1a0709}.b-gr{color:var(--dim);border-color:#2a3542}.b-cy{color:var(--cy);border-color:#0b4a55;background:#06161b}
+.strip{display:inline-flex;gap:1px}.sq{width:7px;height:12px;display:inline-block}
+.sq.success{background:var(--ok)}.sq.partial{background:var(--am)}.sq.failed{background:var(--bad)}.sq.no_result{background:var(--gray)}.sq.not_scheduled{border:1px solid #3a4654;background:transparent}
+.serial button{padding:0 4px;font-size:10px;margin-left:4px}
+.detail td{background:#080c11;padding:12px 14px;white-space:normal}
+.dgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}
+.panel{background:var(--bg2);border:1px solid var(--line);padding:10px}.panel h4{margin:0 0 8px;font:600 10px var(--mono);color:var(--cy);text-transform:uppercase;letter-spacing:1.5px}
+dl{display:grid;grid-template-columns:140px 1fr;gap:2px 10px;margin:0;font:12px var(--mono)}dt{color:var(--dim)}dd{margin:0;word-break:break-word}
+.thumbs{display:flex;flex-wrap:wrap;gap:6px}.thumbs img{width:90px;height:90px;object-fit:cover;border:1px solid var(--line)}
+.actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.form{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:6px 10px}.form label{font:10px var(--mono);color:var(--dim);display:flex;flex-direction:column;gap:2px}
+.audit{max-height:200px;overflow:auto;font:11px var(--mono)}.audit div{border-bottom:1px solid #111a24;padding:2px 0}.audit span{color:var(--dim)}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px}
+.banner{padding:6px 10px;font:11px var(--mono);margin-bottom:8px}.banner.red{background:#2a070c;color:var(--bad);border:1px solid #5a1620}.banner.stale{background:#1a1300;color:var(--am);border:1px solid #5a3e00}
+.emptybox{border:1px dashed var(--line);padding:40px;text-align:center;color:var(--dim);font:12px var(--mono)}
+.modal{position:fixed;inset:0;background:#000a;display:none;align-items:flex-start;justify-content:center;z-index:20;padding-top:6vh}.modal.on{display:flex}
+.modal .box{background:var(--bg2);border:1px solid var(--cy);box-shadow:0 0 30px #00e5ff22;padding:16px;width:min(900px,94vw);max-height:86vh;overflow:auto}
+.modal h3{margin:0 0 10px;font:600 13px var(--mono);color:var(--cy);letter-spacing:1px}
+#toast{position:fixed;right:16px;bottom:16px;background:var(--bg3);border:1px solid var(--cy);padding:8px 12px;font:12px var(--mono);display:none;z-index:30}#toast.err{border-color:var(--bad);color:var(--bad)}
+.hidden{display:none}.dim{color:var(--dim)}
+</style></head><body>
+<header><div class="logo">ASSET<b>VAULT</b></div>
+<nav><a href="#inv" data-view="inv" class="on">Inventory</a><a href="#sources" data-view="sources">Sources</a><a href="#merge" data-view="merge">Merge review</a></nav>
+<div class="sp"></div><button id="btnAdd">+ Add</button><button class="amber" data-export="CSV">Export CSV</button><button class="amber" data-export="PDF">Export PDF</button>
+<span class="lock" title="Decrypted in memory only">unlocked · 127.0.0.1</span></header>
+<main>
+<section id="v-inv">
+ <div class="tiles" id="tiles"></div>
+ <div class="filters">
+  <label>room<select id="fRoom"></select></label><label>category<select id="fCat"></select></label>
+  <label>source<select id="fSrc"></select></label><label>rpo<select id="fRpo"></select></label>
+  <label><input type="checkbox" id="fNoSucc">no success in <input type="number" id="fNoSuccN" value="7" min="1"> d</label>
+  <label><input type="checkbox" id="fCheckin">no check-in 14d+</label><label><input type="checkbox" id="fWarr">warranty ≤60d</label>
+  <label><input type="checkbox" id="fUnenc">unencrypted</label><label><input type="checkbox" id="fNoVal">no insurance value</label>
+  <label><input type="checkbox" id="fNoSer">missing serial</label><label><input type="checkbox" id="fIncomplete">incomplete</label>
+  <input id="fQ" placeholder="search…" style="width:180px"><button id="fClear">clear</button>
+ </div>
+ <div class="bar"><label class="dim" style="font:11px var(--mono)">group by <select id="grp"><option value="">none</option><option>room</option><option>category</option><option>owner</option><option>source</option></select></label><span class="cnt" id="cnt"></span></div>
+ <table><thead><tr><th>Name</th><th>Room</th><th>Category</th><th>Source</th><th>Serial</th><th>Backup method</th><th>30-day history</th><th>RPO</th><th>Last success</th><th>Warranty</th><th class="num">Value</th><th>Complete</th></tr></thead><tbody id="grid"></tbody></table>
+</section>
+<section id="v-sources" class="hidden"><div id="srcBody"></div></section>
+<section id="v-merge" class="hidden"><div id="mergeBody"></div></section>
+</main>
+<div class="modal" id="modal"><div class="box"><h3 id="mTitle"></h3><div id="mBody"></div></div></div>
+<div id="toast"></div>
+<script>
+"use strict";
+const BASE="__BASE__";let S=null,openId=null,tileF=null;const revealed={};
+const $=id=>document.getElementById(id);
+const esc=v=>v==null?"":String(v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const money=v=>v==null?"—":"$"+Number(v).toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:2});
+const dshort=s=>s?String(s).replace("T"," ").slice(0,16):"—";
+function toast(m,err){const t=$("toast");t.textContent=m;t.className=err?"err":"";t.style.display="block";clearTimeout(t._h);t._h=setTimeout(()=>t.style.display="none",3500)}
+async function api(path,body,poll){const o=body===undefined?(poll?{headers:{"X-AV-Poll":"1"}}:{}):{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)};
+ const r=await fetch(BASE+path,o);let j={};try{j=await r.json()}catch(e){}if(!r.ok)throw new Error(j.error||("HTTP "+r.status));return j}
+const RPO_CLS={"Met":"b-ok","At risk":"b-am","Breached":"b-bad","No data":"b-gr","Not scheduled":"b-gr"};
+const WAR={expired:["EXPIRED","b-bad"],expiring:["≤60D","b-am"],ok:["OK","b-ok"],unknown:["—","b-gr"]};
+const SQ_LBL={success:"success",partial:"partial",failed:"failed",no_result:"no result",not_scheduled:"not scheduled"};
+const daysSince=s=>s?(Date.now()-new Date(s).getTime())/864e5:Infinity;
+async function load(poll){try{S=await api("api/state",undefined,poll);render()}catch(e){toast("load failed: "+e.message,1)}}
+function opts(sel,label,arr){const cur=sel.value;sel.innerHTML=`<option value="">all</option>`+arr.map(v=>`<option>${esc(v)}</option>`).join("");sel.value=arr.includes(cur)?cur:""}
+function render(){const c=S.config;opts($("fRoom"),"room",c.rooms||[]);opts($("fCat"),"cat",c.categories||[]);opts($("fSrc"),"src",S.source_kinds);
+ opts($("fRpo"),"rpo",["Met","At risk","Breached","No data","Not scheduled"]);renderTiles();renderGrid();renderSources();renderMerge()}
+function tiles(){const it=S.items,n=s=>it.filter(i=>i.rpo===s).length;return[
+ ["total","Total devices",it.length,""],["Met","RPO met",n("Met"),"ok"],["At risk","RPO at risk",n("At risk"),"am"],["Breached","RPO breached",n("Breached"),"bad"],
+ ["No data","RPO no data",n("No data"),"gr"],["warr","Warranty ≤60d",it.filter(i=>i.warranty==="expiring").length,"am"],
+ ["inc","Incomplete records",it.filter(i=>i.flags.length).length,"am"],["value","Replacement value",money(it.reduce((a,i)=>a+(i.replacement_value||0),0)),""]]}
+function renderTiles(){$("tiles").innerHTML=tiles().map(([k,l,v,c])=>`<div class="tile ${c} ${tileF===k?"on":""}" data-tile="${k}"><div class="k">${esc(l)}</div><div class="v">${esc(v)}</div></div>`).join("")}
+function filtered(){const q=$("fQ").value.trim().toLowerCase(),N=+$("fNoSuccN").value||7;return S.items.filter(i=>{
+ if($("fRoom").value&&i.room!==$("fRoom").value)return false;if($("fCat").value&&i.category!==$("fCat").value)return false;
+ if($("fSrc").value&&(i.source||"Manual")!==$("fSrc").value)return false;if($("fRpo").value&&i.rpo!==$("fRpo").value)return false;
+ if($("fNoSucc").checked&&!(daysSince(i.last_success)>N))return false;if($("fCheckin").checked&&!(i.last_checkin&&daysSince(i.last_checkin)>=14))return false;
+ if($("fWarr").checked&&i.warranty!=="expiring")return false;if($("fUnenc").checked&&!i.unencrypted)return false;
+ if($("fNoVal").checked&&i.replacement_value!=null)return false;if($("fNoSer").checked&&!i.flags.includes("missing serial"))return false;
+ if($("fIncomplete").checked&&!i.flags.length)return false;
+ if(tileF){if(["Met","At risk","Breached","No data"].includes(tileF)&&i.rpo!==tileF)return false;if(tileF==="warr"&&i.warranty!=="expiring")return false;
+  if(tileF==="inc"&&!i.flags.length)return false;if(tileF==="value"&&i.replacement_value==null)return false}
+ if(q&&![i.name,i.room,i.category,i.owner,i.source,i.backup_method,i.serial_masked,i.encryption_status,...i.sources].join(" ").toLowerCase().includes(q))return false;
+ return true})}
+function strip(i){return `<span class="strip">`+i.strip.map(d=>`<span class="sq ${d.state}" title="${esc(d.date)}: ${esc(SQ_LBL[d.state])}${d.results.length>1?" ("+esc(d.results.join(", "))+")":""}"></span>`).join("")+`</span>`}
+function rowHtml(i){const w=WAR[i.warranty]||WAR.unknown;const ser=i.has_serial?`<span class="serial">${esc(revealed[i.id]||i.serial_masked)}<button data-reveal="${i.id}">${revealed[i.id]?"hide":"show"}</button></span>`:`<span class="dim">—</span>`;
+ return `<tr class="row ${openId===i.id?"open":""}" data-id="${i.id}"><td class="name">${esc(i.name)}${i.verified?` <span class="b b-cy" title="verified">✓</span>`:""}${i.paused?` <span class="b b-gr">paused</span>`:""}</td><td>${esc(i.room||"—")}</td><td>${esc(i.category||"—")}</td>
+ <td><span class="b b-cy">${esc(i.source||"Manual")}</span></td><td>${ser}</td><td>${esc(i.backup_method||"—")}</td><td>${strip(i)}</td>
+ <td><span class="b ${RPO_CLS[i.rpo]}">${esc(i.rpo)}</span></td><td>${esc(dshort(i.last_success))}</td><td><span class="b ${w[1]}" title="${esc(i.warranty_expiry||"no expiry recorded")}">${w[0]}</span></td>
+ <td class="num">${money(i.replacement_value)}</td><td>${i.flags.length?`<span class="b b-am" title="${esc(i.flags.join(", "))}">${i.flags.length} missing</span>`:`<span class="b b-ok">complete</span>`}</td></tr>`+
+ (openId===i.id?`<tr class="detail"><td colspan="12" id="det-${i.id}"><span class="dim">decrypting…</span></td></tr>`:"")}
+function renderGrid(){const rows=filtered(),g=$("grp").value;let h="";
+ if(!S.items.length)h=`<tr class="empty"><td colspan="12">Vault empty. Add items from chat or the + Add button.</td></tr>`;
+ else if(!rows.length)h=`<tr class="empty"><td colspan="12">No devices match the current filters.</td></tr>`;
+ else if(g){const m=new Map();rows.forEach(i=>{const k=i[g]||(g==="source"?"Manual":"(none)");if(!m.has(k))m.set(k,[]);m.get(k).push(i)});
+  [...m.keys()].sort().forEach(k=>{const a=m.get(k);h+=`<tr class="grp"><td colspan="12">${esc(k)}<span>${a.length} device${a.length==1?"":"s"} · ${money(a.reduce((s,i)=>s+(i.replacement_value||0),0))}</span></td></tr>`+a.map(rowHtml).join("")})}
+ else h=rows.map(rowHtml).join("");
+ $("grid").innerHTML=h;$("cnt").textContent=`${rows.length} of ${S.items.length} shown`;if(openId&&rows.some(r=>r.id===openId))loadDetail(openId)}
+const FIELDS=[["name","Name"],["category","Category","cat"],["room","Room","room"],["owner","Owner"],["brand","Brand"],["model","Model"],["serial","Serial"],["mac","MAC"],["os","OS"],
+ ["purchase_date","Purchase date","date"],["purchase_price","Purchase price","num"],["current_value","Current value","num"],["replacement_value","Replacement value","num"],["condition","Condition"],
+ ["warranty_expiry","Warranty expiry","date"],["warranty_provider","Warranty provider"],["backup_method","Backup method"],["rpo_target_hours","RPO target (hours)","int"],["rpo_notes","RPO notes"],
+ ["encryption_status","Encryption status"],["last_checkin","Last check-in","date"],["notes","Notes","area"]];
+async function loadDetail(id){let d;try{d=await api("api/item/"+id)}catch(e){const el=$("det-"+id);if(el)el.textContent="error: "+e.message;return}
+ const el=$("det-"+id);if(!el)return;const it=d.item,r=d.rpo;
+ const rec=FIELDS.map(([k,l])=>`<dt>${esc(l)}</dt><dd>${k==="serial"?esc(revealed[id]||it.serial_masked||"—"):esc(it[k]==null||it[k]===""?"—":it[k])}</dd>`).join("")+
+  `<dt>Source</dt><dd>${esc(it.source||"Manual")}</dd><dt>External IDs</dt><dd>${esc(JSON.stringify(it.external_ids||{}))}</dd><dt>Verified</dt><dd>${it.verified?"yes":"no"}</dd><dt>Paused</dt><dd>${it.paused?"yes":"no"}</dd>`+
+  (it.backup_status||it.rpo_target_days?`<dt class="dim">legacy status</dt><dd class="dim">${esc(it.backup_status||"—")} / ${esc(it.rpo_target_days??"—")} d</dd>`:"")+`<dt>Created</dt><dd>${esc(dshort(it.created_at))}</dd><dt>Updated</dt><dd>${esc(dshort(it.updated_at))}</dd>`;
+ const ph=it.photo_refs.length?`<div class="thumbs">`+it.photo_refs.map(p=>`<a href="${BASE}api/blob/${esc(p.id)}" target="_blank" rel="noopener"><img src="${BASE}api/blob/${esc(p.id)}" alt="${esc(p.name||"photo")}" title="${esc(p.name||p.id)}"></a>`).join("")+`</div>`:`<span class="dim">No photos.</span>`;
+ const rc=it.receipt_refs.length?it.receipt_refs.map(p=>`<div><a href="${BASE}api/blob/${esc(p.id)}" target="_blank" rel="noopener">${esc(p.name||p.id)}</a> <span class="dim">${esc(dshort(p.added))}</span></div>`).join(""):`<span class="dim">No receipts.</span>`;
+ const src=d.sources.length?d.sources.map(s=>`<div><span class="b b-cy">${esc(s.name)}</span> <span class="dim">${esc(s.kind||"")} · seen ${esc(dshort(s.seen_at))} · health ${esc(s.health||"—")}</span></div>`).join(""):`<span class="dim">Manual entry only (no connector or import has seen this device).</span>`;
+ const hist=d.history.length?d.history.slice(0,15).map(h=>`<div><span class="sq ${h.result==="manual"?"success":h.result}"></span> ${esc(dshort(h.date))} ${esc(h.result)} <span>${esc(h.note||"")}</span></div>`).join(""):`<span class="dim">No backup results logged.</span>`;
+ const aud=d.audit.length?d.audit.map(a=>`<div><span>${esc(dshort(a.ts))}</span> ${esc(a.action)} <span>${esc(a.detail?JSON.stringify(a.detail):"")}</span></div>`).join(""):`<span class="dim">No audit entries.</span>`;
+ const vr=r.variance_hours==null?"—":(r.variance_hours>0?"+":"")+r.variance_hours+" h";
+ el.innerHTML=`<div class="dgrid"><div class="panel"><h4>Record</h4><dl>${rec}</dl></div>
+ <div><div class="panel"><h4>Recovery point</h4><dl><dt>State</dt><dd><span class="b ${RPO_CLS[r.state]}">${esc(r.state)}</span></dd><dt>Target</dt><dd>${r.target_hours==null?"—":esc(r.target_hours)+" h"}</dd>
+  <dt>Actual (since success)</dt><dd>${r.actual_hours==null?"—":esc(r.actual_hours)+" h"}</dd><dt>Variance</dt><dd>${esc(vr)}</dd><dt>Last success</dt><dd>${esc(dshort(r.last_success))}</dd><dt>Last attempt</dt><dd>${esc(dshort(r.last_attempt))}</dd>
+  <dt>Warranty</dt><dd>${esc(d.warranty)}</dd><dt>Missing</dt><dd>${esc(d.flags.join(", ")||"nothing")}</dd></dl><div class="audit" style="margin-top:8px">${hist}</div></div>
+  <div class="panel" style="margin-top:12px"><h4>Sources</h4>${src}</div></div>
+ <div><div class="panel"><h4>Photos</h4>${ph}<h4 style="margin-top:10px">Receipts</h4>${rc}</div><div class="panel" style="margin-top:12px"><h4>Audit trail</h4><div class="audit">${aud}</div></div></div></div>
+ <div class="actions"><button data-act="edit" data-id="${id}">Edit</button><button data-act="log" data-id="${id}">Log backup result</button>
+ <button data-act="verify" data-id="${id}">${it.verified?"Unmark verified":"Mark verified"}</button><button data-act="pause" data-id="${id}" class="amber">${it.paused?"Unpause":"Pause"}</button>
+ <button data-act="attach" data-kind="photo" data-id="${id}">Attach photo</button><button data-act="attach" data-kind="receipt" data-id="${id}">Attach receipt</button>
+ <span class="sp"></span><button data-act="delete" data-id="${id}" class="danger">Delete…</button></div>`;el._item=it}
+function fieldInput(k,l,t,v){const c=S.config;if(t==="cat"||t==="room"){const a=(t==="cat"?c.categories:c.rooms)||[];return `<label>${esc(l)}<select name="${k}"><option value=""></option>${a.map(x=>`<option ${x===v?"selected":""}>${esc(x)}</option>`).join("")}</select></label>`}
+ if(t==="area")return `<label style="grid-column:1/-1">${esc(l)}<textarea name="${k}" rows="2">${esc(v)}</textarea></label>`;
+ const ty=t==="date"?"text":(t==="num"||t==="int")?"number":"text";const ph=t==="date"?"YYYY-MM-DD":"";
+ return `<label>${esc(l)}<input name="${k}" type="${ty}" ${t==="num"?'step="0.01" min="0"':""}${t==="int"?'step="1" min="1"':""} placeholder="${ph}" value="${esc(v)}"></label>`}
+function modal(title,html){$("mTitle").textContent=title;$("mBody").innerHTML=html;$("modal").classList.add("on")}
+function closeModal(){$("modal").classList.remove("on");$("mBody").innerHTML=""}
+function formVals(f,skipEmpty){const o={};new FormData(f).forEach((v,k)=>{if(!(skipEmpty&&v===""))o[k]=v});return o}
+async function itemForm(it){const isNew=!it;modal(isNew?"+ ADD ITEM (manual)":"EDIT · "+it.name,`<form id="itf" class="form">${FIELDS.map(([k,l,t])=>fieldInput(k,l,t,isNew||k==="serial"?"":it[k]??"")).join("")}</form>
+ ${isNew?"":`<p class="dim" style="font:11px var(--mono)">Serial left blank = unchanged (current ${esc(it.serial_masked||"none")}). Clearing other fields sets them empty.</p>`}
+ <div class="actions"><button id="itSave">${isNew?"Add item":"Save changes"}</button><button class="amber" data-close>Cancel</button></div>`);
+ $("itSave").onclick=async()=>{const f=$("itf");const v=formVals(f,isNew);try{if(isNew){const r=await api("api/item",v);openId=r.id;toast("item added")}else{await api(`api/item/${it.id}/edit`,v);toast("saved")}closeModal();load()}catch(e){toast(e.message,1)}}}
+function logForm(id){const t=new Date(),p=n=>String(n).padStart(2,"0");const today=`${t.getFullYear()}-${p(t.getMonth()+1)}-${p(t.getDate())}T${p(t.getHours())}:${p(t.getMinutes())}`;
+ modal("LOG BACKUP RESULT",`<form id="lf" class="form"><label>Date<input name="date" value="${today}" placeholder="YYYY-MM-DD or ISO datetime"></label><label>Result<select name="result"><option>success</option><option>partial</option><option>failed</option><option>manual</option></select></label><label style="grid-column:1/-1">Note<input name="note"></label></form>
+ <div class="actions"><button id="lfSave">Log</button><button class="amber" data-close>Cancel</button></div>`);
+ $("lfSave").onclick=async()=>{try{await api(`api/item/${id}/log_backup`,formVals($("lf")));closeModal();toast("logged");load()}catch(e){toast(e.message,1)}}}
+function delForm(it){modal("DELETE ITEM",`<p>This permanently removes <b>${esc(it.name)}</b> and its backup history from the vault. Type the item name exactly to confirm.</p>
+ <input id="delName" style="width:100%" autocomplete="off"><div class="actions"><button class="danger" id="delGo">Delete</button><button class="amber" data-close>Cancel</button></div>`);
+ $("delGo").onclick=async()=>{try{await api(`api/item/${it.id}/delete`,{confirm_name:$("delName").value});closeModal();openId=null;toast("deleted");load()}catch(e){toast(e.message,1)}}}
+function attach(id,kind){const inp=document.createElement("input");inp.type="file";inp.accept=kind==="photo"?"image/*":"image/*,application/pdf";
+ inp.onchange=()=>{const f=inp.files[0];if(!f)return;if(f.size>18*1024*1024)return toast("file too large (18 MB max)",1);const rd=new FileReader();
+  rd.onload=async()=>{const b64=String(rd.result).split(",")[1]||"";try{await api(`api/item/${id}/attach`,{kind,name:f.name,mime:f.type,data:b64});toast(kind+" encrypted and attached");load()}catch(e){toast(e.message,1)}};rd.readAsDataURL(f)};inp.click()}
+function renderSources(){const s=S.sources;const D30=30;
+ $("srcBody").innerHTML=!s.length?`<div class="emptybox">No imports or connectors yet. Manual entry only.</div>`:`<div class="cards">`+s.map(x=>{const failing=/fail|error|red|down/i.test(x.health||"");const stale=daysSince(x.last_sync)>D30;
+  return `<div class="panel">${failing?`<div class="banner red">HEALTH FAILING · ${esc(x.detail||x.health)}</div>`:""}${stale?`<div class="banner stale">STALE · last sync ${x.last_sync?"over 30 days ago":"never"}</div>`:""}
+  <h4>${esc(x.name)}</h4><dl><dt>Kind</dt><dd>${esc(x.kind||"—")}</dd><dt>Last sync</dt><dd>${esc(dshort(x.last_sync))}</dd><dt>Added</dt><dd>${esc(x.added??0)}</dd><dt>Updated</dt><dd>${esc(x.updated??0)}</dd><dt>Skipped</dt><dd>${esc(x.skipped??0)}</dd><dt>Health</dt><dd>${esc(x.health||"—")}</dd><dt>Detail</dt><dd>${esc(x.detail||"—")}</dd></dl></div>`}).join("")+`</div>`}
+function renderMerge(){const imp=S.sources.filter(x=>(x.kind||"").toLowerCase()!=="manual");
+ $("mergeBody").innerHTML=!imp.length?`<div class="emptybox">Merge review appears after the first CSV import or connector sync. No imports yet.</div>`:`<div class="emptybox">No merge candidates pending. (Merge review will list possible duplicates from ${imp.length} source${imp.length==1?"":"s"} here.)</div>`}
+function view(v){["inv","sources","merge"].forEach(x=>$("v-"+x).classList.toggle("hidden",x!==v));document.querySelectorAll("nav a").forEach(a=>a.classList.toggle("on",a.dataset.view===v))}
+document.addEventListener("click",async e=>{const t=e.target;
+ if(t.closest("[data-close]")){closeModal();return}if(t===$("modal")){closeModal();return}
+ const tl=t.closest("[data-tile]");if(tl){const k=tl.dataset.tile;tileF=(k==="total"||tileF===k)?null:k;renderTiles();renderGrid();return}
+ const nv=t.closest("nav a");if(nv){view(nv.dataset.view);return}
+ const ex=t.closest("[data-export]");if(ex){if(confirm(`Exports are UNENCRYPTED. A ${ex.dataset.export} export writes readable inventory data to disk outside the vault. Continue?`))alert("Run export from chat. (The dashboard doesn't write exports.)");return}
+ const rv=t.closest("[data-reveal]");if(rv){e.stopPropagation();const id=+rv.dataset.reveal;if(revealed[id]){delete revealed[id];renderGrid();return}
+  try{const r=await api(`api/item/${id}/serial`);revealed[id]=r.serial;renderGrid()}catch(er){toast(er.message,1)}return}
+ const ac=t.closest("[data-act]");if(ac){const id=+ac.dataset.id,a=ac.dataset.act;const it=$("det-"+id)&&$("det-"+id)._item;
+  try{if(a==="edit")itemForm(it);else if(a==="log")logForm(id);else if(a==="delete")delForm(it);else if(a==="attach")attach(id,ac.dataset.kind);
+   else{const r=await api(`api/item/${id}/${a}`,{});toast(a==="verify"?(r.verified?"marked verified":"unverified"):(r.paused?"paused":"unpaused"));load()}}catch(er){toast(er.message,1)}return}
+ if(t.closest("#btnAdd")){itemForm(null);return}if(t.closest("#fClear")){document.querySelectorAll(".filters input[type=checkbox]").forEach(c=>c.checked=false);["fRoom","fCat","fSrc","fRpo"].forEach(i=>$(i).value="");$("fQ").value="";tileF=null;renderTiles();renderGrid();return}
+ const row=t.closest("tr.row");if(row&&!t.closest("button")){const id=+row.dataset.id;openId=openId===id?null:id;renderGrid()}});
+document.querySelectorAll(".filters select,.filters input,#grp").forEach(el=>el.addEventListener("input",()=>renderGrid()));
+document.addEventListener("keydown",e=>{if(e.key==="Escape")closeModal()});
+const h=location.hash.slice(1);if(["sources","merge"].includes(h))view(h);{const m=/^item-(\d+)$/.exec(h);if(m)openId=+m[1]}
+load();setInterval(()=>{if(!$("modal").classList.contains("on"))load(true)},60000);
+</script></body></html>
