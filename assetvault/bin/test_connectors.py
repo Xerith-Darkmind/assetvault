@@ -1,7 +1,28 @@
 """Connector, import, merge, export, and migration tests. No live network."""
 import os, sys, json, secrets, tempfile, shutil, subprocess, socket, sqlite3, uuid, base64
 
-REAL = os.environ.get("ASSETVAULT_ROOT", "/workspace/assetvault")
+# This file lives at <repo>/assetvault/bin/ when run from a checkout, and at
+# <ASSETVAULT_ROOT>/bin/ after install.sh. The repo root is the directory that
+# contains install.sh. An installed tree has no install.sh beside it.
+HERE = os.path.dirname(os.path.abspath(__file__))
+PKG = os.path.dirname(HERE)
+REPO = os.path.dirname(PKG)
+if not (os.path.isfile(os.path.join(REPO, "install.sh")) and os.path.isdir(os.path.join(REPO, "assetvault", "bin"))):
+    REPO = None
+INSTALL_ROOT = os.environ.get("ASSETVAULT_ROOT")
+
+def _venv_python():
+    """Prefer the venv next to the code (ASSETVAULT_ROOT or this tree). Fall back to this interpreter."""
+    candidates = []
+    if INSTALL_ROOT:
+        candidates.append(os.path.join(INSTALL_ROOT, ".venv", "bin", "python"))
+    candidates.append(os.path.join(PKG, ".venv", "bin", "python"))
+    for cand in candidates:
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+    return sys.executable
+
+PY = _venv_python()
 TMP = tempfile.mkdtemp(prefix="avc-"); os.chmod(TMP, 0o700)
 VAULT = os.path.join(TMP, "vault"); os.makedirs(VAULT); os.chmod(VAULT, 0o700)
 INBOX = os.path.join(TMP, "inbox"); os.makedirs(INBOX)
@@ -14,7 +35,8 @@ REST_TOK = "rest-token-" + secrets.token_hex(8)
 REST_PW = "rest-password-" + secrets.token_hex(8)
 for _name in ("ASSETVAULT_GRAPH_SECRET", "ASSETVAULT_AD_PASSWORD", "ASSETVAULT_JAMF_SECRET", "ASSETVAULT_REST_TOKEN", "ASSETVAULT_REST_PASSWORD"):
     os.environ.pop(_name, None)
-BIN = os.path.join(REAL, "bin"); sys.path.insert(0, BIN)
+BIN = HERE
+sys.path.insert(0, BIN)
 import avcore as av
 from connectors.base import HttpResponse, HttpClient, ConnectorError, device, jget, public_device
 from connectors.entra import EntraConnector
@@ -30,8 +52,21 @@ socket.socket.connect = _blocked
 
 R = {}; fails = []
 def check(name, cond):
+    if cond == "skipped":
+        R[name] = "skipped"
+        return
     R[name] = bool(cond)
     if not cond: fails.append(name)
+
+def _under(path, root):
+    if not root:
+        return False
+    path = os.path.realpath(path)
+    root = os.path.realpath(root)
+    try:
+        return os.path.commonpath([path, root]) == root
+    except ValueError:
+        return False
 
 def js(status, obj, headers=None):
     return HttpResponse(status, headers or {}, json.dumps(obj).encode())
@@ -488,11 +523,21 @@ try:
     sheet.append(["Sheet PC", "XLSX-SENTINEL-4455", "Intune", "b@contoso.test"])
     xlsx = os.path.join(INBOX, "intune.xlsx"); book.save(xlsx); book.close()
     check("detect_xlsx", importers.load_import(xlsx)["detected"] == "intune" and importers.load_import(xlsx)["devices"][0]["serial"] == "XLSX-SENTINEL-4455")
+    # Only temp files the importer can write. Skip this checkout, the install
+    # tree, and the test's own inbox/vault so a copy of this file under /tmp
+    # (it contains the sentinel) is not reported as a leftover spreadsheet.
     stray = []
-    for dirpath, _, files in os.walk("/tmp"):
-        if dirpath.startswith(INBOX) or dirpath.startswith(VAULT):
+    temp_root = tempfile.gettempdir()
+    skip_roots = [INBOX, VAULT, REPO, INSTALL_ROOT, HERE, PKG]
+    for dirpath, dirnames, files in os.walk(temp_root):
+        # __pycache__ holds this file's compiled source (the sentinel literal).
+        # The importer never writes bytecode; a leftover xlsx copy still matches.
+        dirnames[:] = [d for d in dirnames if d != "__pycache__" and not any(_under(os.path.join(dirpath, d), root) for root in skip_roots)]
+        if any(_under(dirpath, root) for root in skip_roots):
             continue
         for fn in files:
+            if fn == "test_connectors.py" or fn.endswith(".pyc"):
+                continue
             path = os.path.join(dirpath, fn)
             try:
                 if os.path.getsize(path) > 2000000:
@@ -643,31 +688,47 @@ try:
     check("no_secrets_or_inventory_plaintext", leaks == [])
 
     # ---------- CLI
-    py = os.path.join(REAL, ".venv/bin/python")
-    env = dict(os.environ, PYTHONPATH="/workspace")
-    proc = subprocess.run([py, "-m", "assetvault.connect", "connectors"], env=env, cwd="/workspace", capture_output=True, text=True, timeout=60)
+    # A checkout can run `python -m assetvault.connect` with the repo root on
+    # PYTHONPATH. An installed tree has connect.py and no assetvault package.
+    if REPO:
+        cli_base = [PY, "-m", "assetvault.connect"]
+        cli_env = dict(os.environ, PYTHONPATH=REPO)
+        cli_cwd = REPO
+    else:
+        cli_base = [PY, os.path.join(BIN, "connect.py")]
+        cli_env = dict(os.environ)
+        cli_cwd = BIN
+    proc = subprocess.run(cli_base + ["connectors"], env=cli_env, cwd=cli_cwd, capture_output=True, text=True, timeout=60)
     check("cli_connectors", proc.returncode == 0 and '"version": "0.2.0"' in proc.stdout and "Auth failed" in proc.stdout and SECRET not in proc.stdout and SECRET not in proc.stderr)
-    proc = subprocess.run([py, os.path.join(BIN, "connect.py"), "entra", "--config", json.dumps({**ENTRA_CFG, "note": SECRET}), "--test"], env=dict(env, ASSETVAULT_GRAPH_SECRET=SECRET), cwd="/workspace", capture_output=True, text=True, timeout=60)
+    proc = subprocess.run([PY, os.path.join(BIN, "connect.py"), "entra", "--config", json.dumps({**ENTRA_CFG, "note": SECRET}), "--test"], env=dict(cli_env, ASSETVAULT_GRAPH_SECRET=SECRET), cwd=cli_cwd, capture_output=True, text=True, timeout=60)
     check("cli_rejects_secret", proc.returncode == 1 and SECRET not in proc.stdout and SECRET not in proc.stderr and "secret" in proc.stdout)
-    proc = subprocess.run([py, "-m", "assetvault.connect", "sync", "missing-source"], env=env, cwd="/workspace", capture_output=True, text=True, timeout=60)
+    proc = subprocess.run(cli_base + ["sync", "missing-source"], env=cli_env, cwd=cli_cwd, capture_output=True, text=True, timeout=60)
     check("cli_unknown", proc.returncode == 1 and "unknown source" in proc.stdout and "Traceback" not in proc.stderr)
 
-    # ---------- install.sh --update keeps a 0.1.0-shaped vault byte-for-byte
-    inst = os.path.join(TMP, "installroot")
-    os.makedirs(os.path.join(inst, "bin"))
-    open(os.path.join(inst, "bin/avcore.py"), "w").write("# old\n")
-    marker = b"NOT-A-REAL-VAULT-BUT-KEEP-ME-" + secrets.token_bytes(8)
-    for rel in ("vault.db.enc", "vault.meta.json", "audit.log.enc", "blobs/keep.enc", "exports/keep.csv", "connectors/keep.txt"):
-        path = os.path.join(inst, rel)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        open(path, "wb").write(marker)
-    before_bytes = {rel: open(os.path.join(inst, rel), "rb").read() for rel in ("vault.db.enc", "vault.meta.json", "audit.log.enc", "blobs/keep.enc", "exports/keep.csv", "connectors/keep.txt")}
-    proc = subprocess.run(["bash", os.path.join("/workspace", "install.sh"), "--update"], env=dict(os.environ, ASSETVAULT_ROOT=inst), cwd="/workspace", capture_output=True, text=True, timeout=60)
-    after = {rel: open(os.path.join(inst, rel), "rb").read() for rel in before_bytes}
-    check("install_update", proc.returncode == 0 and after == before_bytes and os.path.isfile(os.path.join(inst, "bin/connectors/entra.py")) and open(os.path.join(inst, "VERSION")).read().strip() == "0.2.0")
-    check("install_mentions_deps", "requirements.txt" in proc.stderr)
+    # ---------- install.sh --update keeps a vault byte-for-byte
+    # Skipped from an installed root: install.sh is not copied there.
+    if not REPO:
+        check("install_update", "skipped")
+        check("install_mentions_deps", "skipped")
+    else:
+        inst = os.path.join(TMP, "installroot")
+        os.makedirs(os.path.join(inst, "bin"))
+        open(os.path.join(inst, "bin/avcore.py"), "w").write("# old\n")
+        marker = b"NOT-A-REAL-VAULT-BUT-KEEP-ME-" + secrets.token_bytes(8)
+        for rel in ("vault.db.enc", "vault.meta.json", "audit.log.enc", "blobs/keep.enc", "exports/keep.csv", "connectors/keep.txt"):
+            path = os.path.join(inst, rel)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            open(path, "wb").write(marker)
+        watched = ("vault.db.enc", "vault.meta.json", "audit.log.enc", "blobs/keep.enc", "exports/keep.csv", "connectors/keep.txt")
+        before_bytes = {rel: open(os.path.join(inst, rel), "rb").read() for rel in watched}
+        proc = subprocess.run(["bash", os.path.join(REPO, "install.sh"), "--update"], env=dict(os.environ, ASSETVAULT_ROOT=inst), cwd=REPO, capture_output=True, text=True, timeout=60)
+        after = {rel: open(os.path.join(inst, rel), "rb").read() for rel in watched}
+        check("install_update", proc.returncode == 0 and after == before_bytes and os.path.isfile(os.path.join(inst, "bin/connectors/entra.py")) and open(os.path.join(inst, "VERSION")).read().strip() == "0.2.0")
+        check("install_mentions_deps", "requirements.txt" in proc.stderr)
 finally:
     shutil.rmtree(TMP, ignore_errors=True)
 print(json.dumps(R, indent=0))
-print("FAILED:", fails if fails else "none", "(%d/%d passed)" % (sum(R.values()), len(R)))
+_passed = sum(1 for v in R.values() if v is True)
+_skipped = [name for name, v in R.items() if v == "skipped"]
+print("FAILED:", fails if fails else "none", "(%d/%d passed%s)" % (_passed, len(R) - len(_skipped), (", skipped: " + ", ".join(_skipped)) if _skipped else ""))
 sys.exit(1 if fails else 0)
