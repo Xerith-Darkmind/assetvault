@@ -128,7 +128,8 @@ class GenericRestConnector(Connector):
         from .base import MAX_PAGES
         base = self._url_parts()[0].geturl()
         param = str(self.config.get("page_param") or "page")
-        start = int(self.config.get("page_start") or 1)
+        raw_start = self.config.get("page_start")
+        start = 1 if raw_start is None or raw_start == "" else int(raw_start)
         size = self.config.get("page_size")
         size_param = self.config.get("page_size_param")
         out, seen_fp, page = [], set(), start

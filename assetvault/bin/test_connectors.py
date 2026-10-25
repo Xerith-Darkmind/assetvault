@@ -203,6 +203,33 @@ try:
         [local(1, serial="DUP")],
         [device(name="A", serial="DUP"), device(name="B", serial="DUP")], 7, now)
     check("duplicate_in_source", len(plan["exact"]) == 1 and plan["skipped"][0]["reason"] == "duplicate in source")
+    plan = merge.plan_merge(
+        [local(1, serial="DUP", mac="aa:bb:cc:dd:ee:01"),
+         local(2, serial="OTHER", mac="aa:bb:cc:dd:ee:02", external_ids={"7": "ext-2"}, links=[{"source_id": 7, "external_id": "ext-2"}])],
+        [device(name="A", serial="DUP"), device(name="B", serial="DUP", mac="aa:bb:cc:dd:ee:02", external_id="ext-2")], 7, now)
+    check("duplicate_serial_not_weaker", [row["local_id"] for row in plan["exact"]] == [1] and plan["skipped"][0]["reason"] == "duplicate in source" and all(row.get("local_id") != 2 for row in plan["exact"]))
+    named = device(serial="ABCDEFGH1234", model="ThinkPad")
+    blank = device(serial="ABCDEFGH1234")
+    leaked = public_device({"name": "host-ABCDEFGH1234", "serial": "ABCDEFGH1234", "external_id": "id-ABCDEFGH1234", "model": "ThinkPad"})
+    check("fallback_name_hides_serial", named["name"] == "ThinkPad (\u20261234)" and named.get("name_fallback") is True and blank["name"] == "Unnamed device" and "ABCDEFGH1234" not in named["name"] and "ABCDEFGH1234" not in json.dumps(public_device(named)) and "ABCDEFGH1234" not in json.dumps(leaked))
+    con = av.open_db(key)
+    cur = con.execute("INSERT INTO items(name, serial, model) VALUES(?,?,?)", ("Keep Me", "FALLBACK9999", "Old"))
+    kept_id = cur.lastrowid
+    merge._apply(con, kept_id, device(serial="FALLBACK9999", model="ZBook"), {"id": 99, "kind": "REST"}, now)
+    kept_row = con.execute("SELECT name, model FROM items WHERE id=?", (kept_id,)).fetchone()
+    cur = con.execute("INSERT INTO items(name, serial) VALUES('', 'NEWFALL9999')")
+    empty_id = cur.lastrowid
+    merge._apply(con, empty_id, device(serial="NEWFALL9999", model="Mini"), {"id": 99, "kind": "REST"}, now)
+    empty_row = con.execute("SELECT name FROM items WHERE id=?", (empty_id,)).fetchone()
+    con.execute("INSERT INTO items(name, serial) VALUES('ABCDEFGH1234','ABCDEFGH1234')")
+    cur = con.execute("INSERT INTO sources(name, kind) VALUES('rev-src','REST')")
+    sid = cur.lastrowid
+    rid, _plan = merge.stage(con, sid, [device(serial="ABCDEFGH1234", model="ThinkPad")], "sync")
+    view = merge.review_view(con, con.execute("SELECT * FROM reviews WHERE id=?", (rid,)).fetchone())
+    view_text = json.dumps(view)
+    con.close()
+    check("fallback_does_not_replace_name", kept_row["name"] == "Keep Me" and kept_row["model"] == "ZBook" and empty_row["name"] == "Mini (\u20269999)" and "NEWFALL9999" not in empty_row["name"])
+    check("review_hides_serial", "ABCDEFGH1234" not in view_text and view["exact"] and view["exact"][0]["local_name"] != "ABCDEFGH1234" and view["exact"][0]["incoming"]["name"] == "ThinkPad (\u20261234)")
 
     # ---------- HTTP client refuses writes, follows no redirects
     script = Script()
@@ -463,6 +490,12 @@ try:
     script.on("page=2", js(200, {"data": {"devices": [{"hostname": "p1", "serials": ["P111111"]}]}}))
     rows = list(GenericRestConnector(page_cfg, env={"ASSETVAULT_REST_TOKEN": REST_TOK}, send=script.send).pull())
     check("rest_page_stops_repeat", len(rows) == 1)
+    zero_cfg = dict(page_cfg, page_start=0)
+    script = Script()
+    script.on("page=0", js(200, {"data": {"devices": [{"hostname": "z0", "serials": ["Z0001111"]}]}}))
+    script.on("page=1", js(200, {"data": {"devices": []}}))
+    rows = list(GenericRestConnector(zero_cfg, env={"ASSETVAULT_REST_TOKEN": REST_TOK}, send=script.send).pull())
+    check("rest_page_start_zero", len(rows) == 1 and rows[0]["name"] == "z0" and script.urls and "page=0" in script.urls[0] and "page=1" not in script.urls[0])
     script = Script()
     script.on("/api/devices", js(401, {"token": REST_TOK}))
     try:
@@ -508,10 +541,24 @@ try:
     ad_csv = write_csv("ad.csv", "Name,OperatingSystem,ObjectGUID,DNSHostName,lastLogonTimestamp\nPC-A,Windows,00112233-4455-6677-8899-aabbccddeeff,pc-a,116444736000000000\n")
     ad_loaded = importers.load_import(ad_csv)
     check("detect_ad_filetime", ad_loaded["detected"] == "ad" and ad_loaded["devices"][0]["last_checkin"] == "1969-12-31T19:00:00-05:00")
+    ad_headers = ["Name", "OperatingSystem", "ObjectGUID", "lastLogonTimestamp"]
+    ad_profile, ad_mapping = importers.detect(ad_headers)
+    def ad_row(stamp):
+        return [{"Name": "PC-N", "OperatingSystem": "Windows", "ObjectGUID": "00112233-4455-6677-8899-aabbccddeeff", "lastLogonTimestamp": stamp}]
+    check("ad_int_filetime", ad_profile == "ad" and importers.to_devices(ad_row(116444736000000000), ad_mapping, ad_profile)[0]["last_checkin"] == "1969-12-31T19:00:00-05:00")
+    check("ad_float_filetime", importers.to_devices(ad_row(1.33e17), ad_mapping, ad_profile)[0]["last_checkin"] == filetime_to_iso(1.33e17) and "e17" not in importers.to_devices(ad_row(1.33e17), ad_mapping, ad_profile)[0]["last_checkin"].lower())
+    sci = importers.to_devices(ad_row("1.33e17"), ad_mapping, ad_profile)[0]["last_checkin"]
+    check("ad_sci_filetime", sci == filetime_to_iso(int(float("1.33e17"))) and "e17" not in sci.lower())
     jamf_csv = write_csv("jamf.csv", "Computer Name,Serial Number,Asset Tag,Model Identifier\nMac,JAMF9999,AT,MacBookPro\n")
     check("detect_jamf", importers.load_import(jamf_csv)["detected"] == "jamf")
+    jamf_mark = write_csv("jamf-mark.csv", "Computer Name,Serial Number,Asset Tag,Last Inventory Update\nMac,JAMF1111,AT,2026-10-01\n")
+    jamf_loaded = importers.load_import(jamf_mark)
+    check("detect_jamf_markers", jamf_loaded["detected"] == "jamf" and jamf_loaded["devices"][0]["name"] == "Mac" and jamf_loaded["devices"][0]["managed_by"] == "Jamf")
     generic_csv = write_csv("generic.csv", "Hostname,Serial\nBox,GEN12345\n")
     check("detect_generic", importers.load_import(generic_csv)["detected"] == "generic" and importers.load_import(generic_csv)["devices"][0]["name"] == "Box")
+    plain_csv = write_csv("plain.csv", "Name,Serial number,Asset tag\nLaptop,GENERIC9999,AT-9\n")
+    plain = importers.load_import(plain_csv)
+    check("generic_not_jamf", plain["detected"] == "generic" and plain["devices"][0]["name"] == "Laptop" and plain["devices"][0].get("managed_by") in (None, "") and "GENERIC9999" not in plain["devices"][0]["name"])
     try:
         importers.load_import(write_csv("old.xls", "name\n"))
         check("reject_xls", False)
@@ -523,6 +570,13 @@ try:
     sheet.append(["Sheet PC", "XLSX-SENTINEL-4455", "Intune", "b@contoso.test"])
     xlsx = os.path.join(INBOX, "intune.xlsx"); book.save(xlsx); book.close()
     check("detect_xlsx", importers.load_import(xlsx)["detected"] == "intune" and importers.load_import(xlsx)["devices"][0]["serial"] == "XLSX-SENTINEL-4455")
+    book = Workbook(); sheet = book.active
+    sheet.append(["Name", "OperatingSystem", "ObjectGUID", "lastLogonTimestamp"])
+    sheet.append(["PC-Num", "Windows", "00112233-4455-6677-8899-aabbccddeeff", 116444736000000000])
+    ad_xlsx = os.path.join(INBOX, "ad-times.xlsx"); book.save(ad_xlsx); book.close()
+    ad_num = importers.load_import(ad_xlsx)
+    stamp = ad_num["devices"][0]["last_checkin"]
+    check("ad_xlsx_filetime", ad_num["detected"] == "ad" and stamp == filetime_to_iso(float(116444736000000000)) and "T" in stamp and "e+" not in stamp.lower())
     # Only temp files the importer can write. Skip this checkout, the install
     # tree, and the test's own inbox/vault so a copy of this file under /tmp
     # (it contains the sentinel) is not reported as a leftover spreadsheet.
@@ -660,10 +714,11 @@ try:
     png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
     bid = av.put_blob(key, png)
     con.execute("UPDATE items SET photo_refs=?, receipt_refs=? WHERE serial='SYNC-SERIAL-7781'", (json.dumps([{"id": bid, "name": "shot.png"}]), json.dumps([{"id": bid, "name": "receipt-secret.html"}])))
+    con.execute("UPDATE sources SET name='=cmd' WHERE name='Lab REST'")
     av.save_db(key, con); con.close()
     csv_out = ops.export_inventory("csv", key=key)
     csv_bytes = open(os.path.join(VAULT, "exports", csv_out["filename"]), "rb").read()
-    check("csv_export", csv_out["ok"] and b"SYNC-SERIAL-7781" in csv_bytes and b"'=SUM(1)" in csv_bytes and oct(os.stat(os.path.join(VAULT, "exports", csv_out["filename"])).st_mode & 0o777) == "0o600")
+    check("csv_export", csv_out["ok"] and b"SYNC-SERIAL-7781" in csv_bytes and b"'=SUM(1)" in csv_bytes and b"'=cmd" in csv_bytes and oct(os.stat(os.path.join(VAULT, "exports", csv_out["filename"])).st_mode & 0o777) == "0o600")
     pdf_out = ops.export_inventory("pdf", key=key)
     pdf_bytes = open(os.path.join(VAULT, "exports", pdf_out["filename"]), "rb").read()
     red_out = ops.export_inventory("pdf-redacted", key=key)

@@ -8,7 +8,7 @@ belong to this source and were not matched are flagged not seen.
 import json
 
 import avcore as av
-from connectors.base import public_device
+from connectors.base import public_device, redact_serial_text
 from errors import MergeError
 
 _COLMAP = {
@@ -112,6 +112,10 @@ def plan_merge(local_items, incoming, source_id, now):
             iid = ix[val]
             if iid in used:
                 hit_used = True
+                # This serial already identified a row used earlier in the plan.
+                # Falling through to MAC or external id would update a different item.
+                if kind == "serial":
+                    break
                 continue
             exact.append({"local_id": iid, "match_on": kind, "incoming": inc})
             used.add(iid)
@@ -219,6 +223,22 @@ def _link(con, item_id, source_id, external_id, now):
     )
 
 
+def _name_is_fallback(incoming):
+    """True when the incoming name was generated, not supplied by the source."""
+    if incoming.get("name_fallback"):
+        return True
+    name = str(incoming.get("name") or "").strip()
+    if name.casefold() in ("", "unnamed device"):
+        return True
+    serial = str(incoming.get("serial") or "").strip()
+    if serial and name.casefold() == serial.casefold():
+        return True
+    ext = str(incoming.get("external_id") or "").strip()
+    if ext and name.casefold() == ext.casefold():
+        return True
+    return False
+
+
 def _apply(con, local_id, incoming, source, now):
     row = con.execute("SELECT * FROM items WHERE id=?", (local_id,)).fetchone()
     if not row:
@@ -228,6 +248,8 @@ def _apply(con, local_id, incoming, source, now):
     for src, dst in _COLMAP.items():
         val = incoming.get(src)
         if val not in (None, ""):
+            if dst == "name" and _name_is_fallback(incoming) and (current.get("name") or "").strip():
+                continue
             updates[dst] = val
     if incoming.get("notes") and not (current.get("notes") or "").strip():
         updates["notes"] = incoming.get("notes")
@@ -338,17 +360,24 @@ def review_view(con, row):
         for entry in payload.get(bucket) or []:
             if entry.get("local_id") is not None:
                 ids.append(entry["local_id"])
-    names = {}
+    names, serials = {}, {}
     if ids:
         uniq = list(dict.fromkeys(ids))
-        q = "SELECT id, name FROM items WHERE id IN (%s)" % ",".join("?" for _ in uniq)
+        q = "SELECT id, name, serial FROM items WHERE id IN (%s)" % ",".join("?" for _ in uniq)
         for item in con.execute(q, uniq):
             names[item["id"]] = item["name"]
+            serials[item["id"]] = item["serial"]
+
+    def local_label(entry):
+        text = names.get(entry.get("local_id"))
+        text = redact_serial_text(text, serials.get(entry.get("local_id")))
+        text = redact_serial_text(text, (entry.get("incoming") or {}).get("serial"))
+        return text
 
     def pub(entry):
         return {
             "local_id": entry.get("local_id"),
-            "local_name": names.get(entry.get("local_id")),
+            "local_name": local_label(entry),
             "match_on": entry.get("match_on"),
             "incoming": public_device(entry.get("incoming") or {}),
         }
@@ -379,7 +408,11 @@ def review_view(con, row):
         "new": [{"incoming": public_device(entry.get("incoming") or {})} for entry in payload.get("new") or []],
         "not_seen": [{
             "local_id": entry.get("local_id"),
-            "local_name": names.get(entry.get("local_id")),
+            "local_name": local_label(entry),
             "not_seen_at": entry.get("not_seen_at"),
         } for entry in payload.get("not_seen") or []],
+        "skipped": [{
+            "reason": entry.get("reason"),
+            "incoming": public_device(entry.get("incoming") or {}),
+        } for entry in payload.get("skipped") or []],
     }

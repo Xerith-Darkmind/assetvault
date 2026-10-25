@@ -271,13 +271,25 @@ def norm_encryption(v):
     return s
 
 
+def display_fallback(d):
+    """A name that does not contain the raw serial."""
+    model = d.get("model")
+    serial = d.get("serial") or ""
+    if model and len(serial) >= 4:
+        return "%s (…%s)" % (model, serial[-4:])
+    if model:
+        return model
+    return "Unnamed device"
+
+
 def device(**kw):
     d = {field: clean(kw.get(field)) for field in DEVICE_FIELDS}
     d["notes"] = clean(kw.get("notes"), 2000)
     d["mac"] = canon_mac(kw.get("mac"))
     d["encryption_status"] = norm_encryption(kw.get("encryption_status"))
     if not d["name"]:
-        d["name"] = d["serial"] or d["external_id"] or "unnamed device"
+        d["name"] = display_fallback(d)
+        d["name_fallback"] = True
     return d
 
 
@@ -311,6 +323,20 @@ def jget(obj, path):
     return cur
 
 
+def redact_serial_text(text, serial):
+    """Remove a raw serial from a display string. Short serials are removed only on a full match."""
+    if not isinstance(text, str):
+        return text
+    raw = str(serial or "").strip()
+    if not raw:
+        return text
+    if len(raw) <= 4:
+        if text.strip().casefold() == raw.casefold():
+            return "Unnamed device"
+        return text
+    return re.compile(re.escape(raw), re.IGNORECASE).sub(avlogic.mask_serial(raw), text)
+
+
 def public_device(dev, secrets=None):
     """Device preview safe to print: serial masked, known secrets removed."""
     dev = dev or {}
@@ -324,6 +350,10 @@ def public_device(dev, secrets=None):
         out["serial"] = "[redacted]"
     else:
         out["serial"] = avlogic.mask_serial(serial)
+    for field, val in list(out.items()):
+        if field == "serial" or not isinstance(val, str):
+            continue
+        out[field] = redact_serial_text(val, serial)
     return out
 
 

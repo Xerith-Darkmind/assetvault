@@ -188,7 +188,7 @@ function renderSources(){const s=S.sources||[];const pending=new Set((S.reviews|
   <dt>Added</dt><dd>${esc(x.added??0)}</dd><dt>Updated</dt><dd>${esc(x.updated??0)}</dd><dt>Skipped</dt><dd>${esc(x.skipped??0)}</dd><dt>Not seen</dt><dd>${esc(x.not_seen??0)}</dd>
   <dt>Health</dt><dd>${esc(x.health||"—")}</dd><dt>Detail</dt><dd>${esc(x.detail||"—")}</dd></dl>
   ${x.connector?`<div class="actions"><button data-sync="${x.id}">Sync now</button></div>`:""}</div>`}).join("")+`</div>`}
-function devLine(p){const d=p.incoming||{};const bits=[d.name,d.model,d.serial,d.external_id].filter(Boolean);return esc(bits.join(" · ")||"unnamed device")}
+function devLine(p){const d=p.incoming||{};const bits=[d.name,d.model,d.serial,d.external_id].filter(Boolean);return esc(bits.join(" · ")||"Unnamed device")}
 function renderMerge(){const rows=S.reviews||[];
  if(!rows.length){$("mergeBody").innerHTML=`<div class="emptybox">No merge candidates pending. Sync a source or import a file to stage a review.</div>`;return}
  $("mergeBody").innerHTML=rows.map(rv=>{const c=rv.counts||{};const map=rv.mapping?Object.keys(rv.mapping).map(k=>k+" → "+rv.mapping[k]).join(", "):"";
@@ -196,9 +196,10 @@ function renderMerge(){const rows=S.reviews||[];
   const soft=(rv.soft||[]).map(p=>`<div class="mrow m-soft">soft · needs verify · ${esc(p.local_name||"")} ← ${devLine(p)} <button data-verify data-review="${rv.id}" data-index="${p.index}">${p.verified?"Verified":"Verify"}</button></div>`).join("");
   const neu=(rv.new||[]).map(p=>`<div class="mrow m-new">new · ${devLine(p)}</div>`).join("");
   const miss=(rv.not_seen||[]).map(p=>`<div class="mrow m-miss">not seen · ${esc(p.local_name||p.local_id)} · ${esc(dshort(p.not_seen_at))}</div>`).join("");
+  const skip=(rv.skipped||[]).map(p=>`<div class="mrow m-miss">skipped · ${esc(p.reason||"duplicate")} · ${devLine(p)}</div>`).join("");
   return `<div class="panel" style="margin-bottom:10px"><h4>${esc(rv.source_name||"source")} · ${esc(rv.detected||rv.kind||"review")}</h4>
    <p class="dim">${c.exact||0} exact · ${c.soft||0} soft · ${c.new||0} new · ${c.not_seen||0} not seen · ${c.skipped||0} skipped${map?" · "+esc(map):""}</p>
-   ${exact}${soft}${neu}${miss}
+   ${exact}${soft}${neu}${miss}${skip}
    <div class="actions"><button data-commit="${rv.id}">Commit</button><button class="danger" data-discard="${rv.id}">Discard</button></div></div>`}).join("")}
 function view(v){["inv","sources","merge"].forEach(x=>$("v-"+x).classList.toggle("hidden",x!==v));document.querySelectorAll("nav a").forEach(a=>a.classList.toggle("on",a.dataset.view===v))}
 document.addEventListener("click",async e=>{const t=e.target;

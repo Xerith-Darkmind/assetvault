@@ -182,6 +182,32 @@ def _val(entry, attr):
     return getattr(obj, "value", obj)
 
 
+def _filetime_ticks(value):
+    """FILETIME ticks from an int, float, or numeric string such as 1.33e17."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return int(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return int(text, 10)
+    except ValueError:
+        pass
+    try:
+        number = float(text)
+    except ValueError:
+        return None
+    if number != number or number in (float("inf"), float("-inf")):
+        return None
+    return int(number)
+
+
 def filetime_to_iso(value):
     if value is None or value == "" or value == 0 or value == "0":
         return None
@@ -190,9 +216,8 @@ def filetime_to_iso(value):
         return dt.astimezone(_TZ).isoformat(timespec="seconds")
     if isinstance(value, (list, tuple)):
         return filetime_to_iso(value[0]) if value else None
-    try:
-        ticks = int(value)
-    except (TypeError, ValueError):
+    ticks = _filetime_ticks(value)
+    if ticks is None:
         return clean(value)
     if ticks <= 0:
         return None

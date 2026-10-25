@@ -205,7 +205,35 @@ def act_attach(iid, body):
         av.audit(STATE["key"], "attach_" + kind, iid, {"blob": bid})
     return {"id": bid}
 
-main
+def _unlink_blob(bid):
+    """Remove one encrypted blob file. Ids are server-generated 32-hex; ignore anything else."""
+    if not isinstance(bid, str) or not re.fullmatch(r"[0-9a-f]{32}", bid): return
+    path = os.path.join(av.BLOBS, bid + ".enc")
+    if os.path.dirname(os.path.abspath(path)) != os.path.abspath(av.BLOBS): return
+    try: os.remove(path)
+    except OSError: pass
+
+def _locked(fn):
+    with WLOCK:
+        return fn()
+
+def act_sync(sid):
+    return _locked(lambda: ops.sync_source(sid, key=STATE["key"]))
+
+def act_verify(rid, body):
+    try: index = int(body.get("index"))
+    except (TypeError, ValueError): raise Bad("index required")
+    verified = body.get("verified") if "verified" in body else None
+    return _locked(lambda: ops.verify_soft(rid, index, verified, key=STATE["key"]))
+
+def act_commit(rid):
+    return _locked(lambda: ops.commit_staged(rid, key=STATE["key"]))
+
+def act_discard(rid):
+    return _locked(lambda: ops.discard_staged(rid, key=STATE["key"]))
+
+def act_export(body):
+    return _locked(lambda: ops.export_inventory((body or {}).get("kind"), key=STATE["key"]))
 
 def act_delete(iid, body):
     blob_ids = []

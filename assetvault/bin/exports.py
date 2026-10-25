@@ -51,10 +51,9 @@ def build_csv(key):
     writer.writerow(cols + ["linked_sources", "not_seen_at"])
     for item in items:
         linked = links.get(item["id"], [])
-        writer.writerow(
-            [_cell(item.get(col)) for col in cols]
-            + ["; ".join(row["name"] for row in linked), "; ".join(row["not_seen_at"] for row in linked if row["not_seen_at"])]
-        )
+        linked_names = "; ".join("" if row["name"] is None else str(row["name"]) for row in linked)
+        missed = "; ".join(row["not_seen_at"] for row in linked if row["not_seen_at"])
+        writer.writerow([_cell(item.get(col)) for col in cols] + [_cell(linked_names), _cell(missed)])
     name = "inventory-%s.csv" % _stamp()
     return name, buf.getvalue().encode("utf-8"), len(items)
 

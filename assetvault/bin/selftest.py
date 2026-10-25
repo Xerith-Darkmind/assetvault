@@ -31,4 +31,27 @@ try: av.unlock(); r["wrong_pass_rejected"] = False
 except av.UnlockError: r["wrong_pass_rejected"] = True
 os.remove(os.path.join(av.ROOT, "audit.failed_unlocks"))  # test artifact, not a real failed unlock
 r["audit_readable"] = av.read_audit(key)[0]["action"] == "setup"
+import importlib.util
+import merge
+from connectors.base import device, public_device
+_plan = merge.plan_merge(
+    [
+        {"id": 1, "serial": "DUP", "mac": "aa:bb:cc:dd:ee:01", "name": "One", "model": "M", "external_ids": {}, "links": []},
+        {"id": 2, "serial": "OTHER", "mac": "aa:bb:cc:dd:ee:02", "name": "Two", "model": "M", "external_ids": {"9": "ext-2"}, "links": [{"source_id": 9, "external_id": "ext-2"}]},
+    ],
+    [device(name="A", serial="DUP"), device(name="B", serial="DUP", mac="aa:bb:cc:dd:ee:02", external_id="ext-2")],
+    9, "2026-10-25T00:00:00-04:00",
+)
+r["serial_duplicate_no_weaker_key"] = [row["local_id"] for row in _plan["exact"]] == [1] and _plan["skipped"][0]["reason"] == "duplicate in source"
+_pub = public_device(device(serial="ABCDEFGH1234", model="ThinkPad"))
+r["fallback_hides_serial"] = "ABCDEFGH1234" not in json.dumps(_pub) and _pub["name"] == "ThinkPad (\u20261234)"
+_dash_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "ui", "app.py")
+_spec = importlib.util.spec_from_file_location("av_dashboard_app", os.path.abspath(_dash_path))
+_dash = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_dash)
+r["dashboard_handlers"] = all(callable(getattr(_dash, _name, None)) for _name in ("act_export", "act_sync", "act_verify", "act_commit", "act_discard", "_unlink_blob")) and not callable(getattr(_dash, "main_leftover", None))
+_failed = [name for name, ok in r.items() if ok is not True]
 print(json.dumps(r))
+if _failed:
+    print("FAILED:", _failed)
+    sys.exit(1)

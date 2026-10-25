@@ -1,6 +1,9 @@
 """End-to-end test against a THROWAWAY temp vault with clearly fake data. Never touches the real vault."""
-import os, sys, json, secrets, tempfile, shutil, subprocess, time, base64, datetime, urllib.request, urllib.error
-REAL = os.environ.get("ASSETVAULT_ROOT", "/workspace/assetvault")   # install root whose bin/ and .venv/ are tested
+import os, sys, json, secrets, tempfile, shutil, subprocess, time, base64, datetime, threading, urllib.request, urllib.error
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+_BIN = os.path.dirname(os.path.abspath(__file__))
+_INSTALL = os.path.dirname(_BIN)
+REAL = os.environ.get("ASSETVAULT_ROOT", _INSTALL)   # install root whose bin/ and .venv/ are tested
 TMP = tempfile.mkdtemp(prefix="avtest-"); os.chmod(TMP, 0o700)
 os.environ["ASSETVAULT_ROOT"] = TMP
 os.environ["ASSETVAULT_PASSPHRASE"] = "throwaway-" + secrets.token_hex(16)   # overrides only inside this process
@@ -96,9 +99,7 @@ try:
     check("query_token_ok", req(None, full=root + "/api/health?token=" + tok)[0] == 200)
     st, body, hd = req("/")
     check("index_200", st == 200 and b"ASSET" in body and b"__BASE__" not in body and b"http://" not in body.replace(b"http://\"", b""))
-
-    
-main
+    check("log_form_sends_offset", b"getTimezoneOffset" in body and b"isoOffset" in body)
     check("no_external_refs", b"https://" not in body and b"cdn" not in body.lower() and b"googleapis" not in body)
     check("csp_header", "default-src 'none'" in hd.get("Content-Security-Policy", ""))
     st, body, _ = req("/api/state"); S = json.loads(body)
@@ -150,8 +151,76 @@ main
     # sources rendering data (inject a fake failing source directly through the write path)
     con = av.open_db(k); con.execute("INSERT INTO sources(name,kind,last_sync,added,updated,skipped,health,detail) VALUES('FAKE Jamf','Jamf','2026-01-01',1,2,3,'failing','fake auth error')"); av.save_db(k, con); con.close()
     S = json.loads(req("/api/state")[1]); check("sources_listed", len(S["sources"]) == 1 and len(S["items"]) == 2)
-
-main
+    # A +09:00 timestamp is the same instant as server "now" and must be stored in vault TZ,
+    # not as Tokyo wall time (which would fall off the New York 30-day strip).
+    server_now = datetime.datetime.fromisoformat(json.loads(req("/api/state")[1])["now"])
+    tokyo = server_now.astimezone(datetime.timezone(datetime.timedelta(hours=9))).isoformat(timespec="seconds")
+    check("log_offset_date", req(f"/api/item/{a}/log_backup", {"result": "manual", "date": tokyo, "note": "tz"})[0] == 200)
+    hist = json.loads(req(f"/api/item/{a}")[1])["history"]
+    stored = next(h["date"] for h in hist if h.get("note") == "tz")
+    check("log_offset_same_instant", abs((datetime.datetime.fromisoformat(stored) - server_now).total_seconds()) < 1)
+    check("log_offset_vault_tz", stored.endswith("-04:00") or stored.endswith("-05:00"))
+    paths = [os.path.join(TMP, "blobs", blob + ".enc"), os.path.join(TMP, "blobs", rblob + ".enc")]
+    check("blobs_present_before_delete", all(os.path.exists(p) for p in paths))
+    check("delete_attached", req(f"/api/item/{a}/delete", {"confirm_name": "FAKE-TEST Laptop Alpha"})[0] == 200)
+    check("blobs_removed", all(not os.path.exists(p) for p in paths) and req("/api/blob/" + blob)[0] == 404 and req("/api/blob/" + rblob)[0] == 404)
+    st, b, _ = req("/api/export", {"kind": "csv"})
+    exported = json.loads(b)
+    exp_path = os.path.join(TMP, exported.get("path") or "missing")
+    check("export_api", st == 200 and exported.get("ok") and exported.get("kind") == "csv" and os.path.isfile(exp_path) and oct(os.stat(exp_path).st_mode & 0o777) == "0o600" and os.path.realpath(exp_path).startswith(os.path.realpath(os.path.join(TMP, "exports")) + os.sep))
+    st, b, _ = req("/api/item", {"name": "FAKE-TEST Sync Target", "category": "Computers", "room": "Office", "model": "SyncModel"})
+    check("sync_target_added", st == 200)
+    sync_target = json.loads(b)["id"]
+    fixture = {"rows": [{"hostname": "FAKE-TEST Sync Target", "model": "SyncModel", "serial": "SOFT9999XXXX"}]}
+    class _Fix(BaseHTTPRequestHandler):
+        def do_GET(self):
+            payload = json.dumps(fixture["rows"]).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+        def log_message(self, *args):
+            pass
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), _Fix)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    port = httpd.server_address[1]
+    con = av.open_db(k)
+    cur = con.execute(
+        "INSERT INTO sources(name, kind, connector, config, added, updated, skipped, not_seen) VALUES(?,?,?,?,0,0,0,0)",
+        ("FAKE REST", "REST", "generic_rest", json.dumps({
+            "url": "http://127.0.0.1:%d/devices" % port, "auth": "none", "allow_insecure": True,
+            "pagination": "none", "mapping": {"name": "hostname", "serial": "serial", "model": "model"},
+        })),
+    )
+    sid = cur.lastrowid
+    av.save_db(k, con); con.close()
+    before_ids = [i["id"] for i in json.loads(req("/api/state")[1])["items"]]
+    st, b, _ = req("/api/source/%d/sync" % sid, {})
+    synced = json.loads(b)
+    after_ids = [i["id"] for i in json.loads(req("/api/state")[1])["items"]]
+    check("sync_api", st == 200 and synced.get("ok") is True and synced.get("review", {}).get("id"))
+    check("sync_keeps_local", after_ids == before_ids and sync_target in after_ids and "SOFT9999XXXX" not in b.decode())
+    review_id = synced["review"]["id"]
+    st, b, _ = req("/api/review/%d/verify" % review_id, {"index": 0})
+    check("verify_api", st == 200 and json.loads(b).get("verified") is True)
+    st, b, _ = req("/api/review/%d/commit" % review_id, {})
+    check("commit_api", st == 200 and json.loads(b).get("ok") is True)
+    detail = json.loads(req("/api/item/%d" % sync_target)[1])
+    kept = detail["item"]
+    revealed = json.loads(req("/api/item/%d/serial" % sync_target)[1])["serial"]
+    check("commit_keeps_name", kept["name"] == "FAKE-TEST Sync Target" and kept.get("serial") is None and revealed == "SOFT9999XXXX" and "SOFT9999XXXX" not in json.dumps(detail))
+    fixture["rows"] = [{"hostname": "FAKE-TEST Fresh", "model": "OtherModel", "serial": "FRESH123456"}]
+    st, b, _ = req("/api/source/%d/sync" % sid, {})
+    again = json.loads(b)
+    check("sync_again", st == 200 and again.get("ok") is True and "FRESH123456" not in b.decode())
+    ids_before_discard = {i["id"] for i in json.loads(req("/api/state")[1])["items"]}
+    st, b, _ = req("/api/review/%d/discard" % again["review"]["id"], {})
+    names_after = [i["name"] for i in json.loads(req("/api/state")[1])["items"]]
+    ids_after_discard = {i["id"] for i in json.loads(req("/api/state")[1])["items"]}
+    check("discard_api", st == 200 and json.loads(b).get("ok") is True and ids_after_discard == ids_before_discard and "FAKE-TEST Fresh" not in names_after)
+    actions = {x["action"] for x in av.read_audit(k)}
+    check("api_audited", {"export", "sync", "verify_soft", "commit", "discard", "item_delete"} <= actions)
     raw = open(os.path.join(TMP, "vault.db.enc"), "rb").read()
     check("db_encrypted", b"SQLite format" not in raw and b"FAKE-TEST" not in raw)
     # ---------- lock.sh
@@ -177,6 +246,9 @@ main
     check("no_plaintext_files", hits == [])
     check("passphrase_not_on_disk", leaks == [])
 finally:
+    if "httpd" in dir() and locals().get("httpd"):
+        try: locals()["httpd"].shutdown()
+        except Exception: pass
     for pr in ("srv", "srv2"):
         if pr in dir() and locals()[pr].poll() is None: locals()[pr].kill()
     shutil.rmtree(TMP, ignore_errors=True)

@@ -61,8 +61,16 @@ _JAMF = {
     "last_checkin": ["last check-in", "last inventory update", "last contact time"],
     "encryption_status": ["filevault 2 status", "filevault status", "disk encryption"],
     "asset_tag": ["asset tag"],
-    "external_id": ["udid", "jss computer id"],
+    "external_id": ["udid", "jss computer id", "jamf pro id"],
 }
+# Headers that generic inventories do not share. Serial number + asset tag is not enough.
+_JAMF_HINTS = (
+    "computer name", "device name",
+    "jamf pro id", "managed",
+    "last inventory update", "last contact time",
+    "udid", "filevault 2 status", "filevault status",
+    "jss computer id", "model identifier",
+)
 _GENERIC = {
     "name": ["name", "device name", "computer name", "display name", "hostname", "host name"],
     "serial": ["serial", "serial number", "serialnumber"],
@@ -124,7 +132,7 @@ def detect(headers):
         return "entra", _mapping(index, _ENTRA)
     if _has(index, "objectguid", "object guid") and _has(index, "operatingsystem", "operating system", "dnshostname", "dns host name", "distinguishedname", "distinguished name", "lastlogontimestamp", "last logon timestamp"):
         return "ad", _mapping(index, _AD)
-    if _has(index, "serial number") and _has(index, "asset tag", "udid", "filevault 2 status", "filevault status", "jss computer id", "last inventory update", "model identifier"):
+    if _has(index, "serial number") and _has(index, *_JAMF_HINTS):
         return "jamf", _mapping(index, _JAMF)
     return "generic", _mapping(index, _GENERIC)
 
@@ -207,6 +215,27 @@ def _lookup(rec, header):
     return None
 
 
+def _numeric_filetime(value):
+    """True for int/float cells and numeric strings, including 1.33e17-style text."""
+    if isinstance(value, bool) or value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return True
+    text = str(value).strip()
+    if not text:
+        return False
+    try:
+        int(text, 10)
+        return True
+    except ValueError:
+        pass
+    try:
+        float(text)
+        return True
+    except ValueError:
+        return False
+
+
 def to_devices(rows, mapping, detected):
     devices = []
     for rec in rows:
@@ -219,9 +248,9 @@ def to_devices(rows, mapping, detected):
             val = _lookup(rec, header)
             if val not in (None, ""):
                 kw[field] = val
-        if detected == "ad" and kw.get("last_checkin") is not None and str(kw["last_checkin"]).strip().isdigit():
+        if detected == "ad" and _numeric_filetime(kw.get("last_checkin")):
             from connectors.ad import filetime_to_iso
-            kw["last_checkin"] = filetime_to_iso(str(kw["last_checkin"]).strip())
+            kw["last_checkin"] = filetime_to_iso(kw["last_checkin"])
         devices.append(device(**kw))
     return devices
 

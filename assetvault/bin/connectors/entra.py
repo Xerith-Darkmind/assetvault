@@ -192,6 +192,9 @@ def _from_both(entra, managed):
         base["os_version"] = clean(entra.get("operatingSystemVersion"))
     if not base.get("last_checkin"):
         base["last_checkin"] = clean(entra.get("approximateLastSignInDateTime"))
-    if not base.get("name"):
-        base["name"] = clean(entra.get("displayName")) or base["external_id"] or "unnamed device"
+    if base.get("name_fallback"):
+        shown = clean(entra.get("displayName"))
+        if shown:
+            base["name"] = shown
+            base.pop("name_fallback", None)
     return base
