@@ -152,8 +152,10 @@ def act_edit(iid, body):
 def act_log(iid, body):
     res = body.get("result")
     if res not in ("success", "partial", "failed", "manual"): raise Bad("invalid result")
-    date = body.get("date") or now().isoformat(timespec="seconds")
-    if not lg.parse_dt(date): raise Bad("invalid date")
+    # Store one canonical vault-TZ instant. Naive values are vault-local; offsets are converted.
+    parsed = lg.parse_dt(body.get("date") or now().isoformat(timespec="seconds"))
+    if not parsed: raise Bad("invalid date")
+    date = parsed.isoformat(timespec="seconds")
     def fn(con):
         get_item(con, iid)
         con.execute("INSERT INTO backup_history(item_id,date,result,note,created_at) VALUES(?,?,?,?,?)",
@@ -191,15 +193,28 @@ def act_attach(iid, body):
         av.audit(STATE["key"], "attach_" + kind, iid, {"blob": bid})
     return {"id": bid}
 
+def _unlink_blob(bid):
+    """Remove one encrypted blob file. Ids are server-generated 32-hex; ignore anything else."""
+    if not isinstance(bid, str) or not re.fullmatch(r"[0-9a-f]{32}", bid): return
+    path = os.path.join(av.BLOBS, bid + ".enc")
+    if os.path.dirname(os.path.abspath(path)) != os.path.abspath(av.BLOBS): return
+    try: os.remove(path)
+    except OSError: pass
+
 def act_delete(iid, body):
+    blob_ids = []
     def fn(con):
         r = get_item(con, iid)
         if (body.get("confirm_name") or "") != r["name"]: raise Bad("confirmation does not match item name")
+        for ref in lg.refs(r["photo_refs"]) + lg.refs(r["receipt_refs"]):
+            blob_ids.append(ref.get("id") if isinstance(ref, dict) else None)
         con.execute("DELETE FROM backup_history WHERE item_id=?", (iid,))
         con.execute("DELETE FROM item_sources WHERE item_id=?", (iid,))
         con.execute("DELETE FROM items WHERE id=?", (iid,))
         return {"ok": True}, "item_delete", iid, None
-    return write(fn)
+    res = write(fn)   # db reference is gone before the files are; a crash can only orphan, not dangle
+    for bid in blob_ids: _unlink_blob(bid)
+    return res
 
 def blob_allowed(bid):
     if not re.fullmatch(r"[0-9a-f]{32}", bid): return None
