@@ -2,8 +2,10 @@
 
 Reads /api/oauth/token, then /api/v1/computers-inventory (falls back to
 /api/v3/computers-inventory when v1 answers 404) and /api/v2/mobile-devices/detail.
-Mobile 401/403 is skipped; computers are still returned. Recovery-key routes
-are never called.
+Mobile inventory defaults to the General section, which has no serial, model,
+MAC, user, or encryption. Those sections are requested explicitly. Mobile
+401/403 is skipped; computers are still returned. Recovery-key routes are
+never called.
 """
 import re
 from urllib.parse import urlencode, urlsplit
@@ -12,6 +14,8 @@ from .base import Connector, ConnectorError, bearer, clean, device, require_ok
 
 _ID = re.compile(r"[A-Za-z0-9._~-]{1,200}")
 _SECTIONS = ("GENERAL", "HARDWARE", "OPERATING_SYSTEM", "DISK_ENCRYPTION", "USER_AND_LOCATION")
+# General alone omits serialNumber, model, wifiMacAddress, the user, and dataProtected.
+_MOBILE_SECTIONS = ("GENERAL", "HARDWARE", "USER_AND_LOCATION", "SECURITY")
 _FALLBACK = object()
 
 
@@ -80,11 +84,11 @@ class JamfConnector(Connector):
         if limit == 0:
             return []
         url = origin + "/api/v2/mobile-devices/detail"
-        resp = self._first(http, token, url, False)
+        resp = self._first(http, token, url, _MOBILE_SECTIONS)
         if resp.status in (401, 403):
             self.notes.append("mobile devices not permitted")
             return []
-        return self._consume(http, token, url, False, limit, resp)
+        return self._consume(http, token, url, _MOBILE_SECTIONS, limit, resp)
 
     def _first(self, http, token, url, sections):
         return http.get(self._page_url(url, 0, sections), bearer(token))
@@ -125,8 +129,10 @@ class JamfConnector(Connector):
 
     def _page_url(self, url, page, sections):
         params = [("page", str(page)), ("page-size", "100")]
+        if sections is True:
+            sections = _SECTIONS
         if sections:
-            params = [("section", s) for s in _SECTIONS] + params
+            params = [("section", s) for s in sections] + params
         return url + "?" + urlencode(params)
 
 

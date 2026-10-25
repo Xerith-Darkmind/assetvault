@@ -32,20 +32,24 @@ def version_string():
 
 def _with_db(fn, key=None):
     key = av.unlock() if key is None else key
-    con = av.open_db(key)
-    action = detail = None
-    try:
-        if av.schema_version(con) < av.SCHEMA_VERSION:
-            con.close()
-            con = None
-            av.migrate(key)
-            con = av.open_db(key)
-        result, action, detail = fn(con)
-        if action:
-            av.save_db(key, con)
-    finally:
-        if con is not None:
-            con.close()
+    # Hold the lock across the network pull. A dashboard edit during a sync
+    # must not save a copy of the vault from before this pull, and this pull
+    # must not save a copy from before that edit.
+    with av.vault_lock():
+        con = av.open_db(key)
+        action = detail = None
+        try:
+            if av.schema_version(con) < av.SCHEMA_VERSION:
+                con.close()
+                con = None
+                av.migrate(key)
+                con = av.open_db(key)
+            result, action, detail = fn(con)
+            if action:
+                av.save_db(key, con)
+        finally:
+            if con is not None:
+                con.close()
     if action:
         av.audit(key, action, detail=detail)
     return result

@@ -1,6 +1,6 @@
 """AssetVault core: AES-256-GCM encrypted SQLite store, blobs, audit log.
 Key from env ASSETVAULT_PASSPHRASE via Argon2id (fallback scrypt). Plaintext DB lives only in memory."""
-import os, sys, json, sqlite3, secrets, base64, datetime, re, tempfile
+import os, sys, json, sqlite3, secrets, base64, datetime, re, tempfile, threading, fcntl
 from contextlib import contextmanager
 from zoneinfo import ZoneInfo
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -49,6 +49,48 @@ def _atomic_write(path, data):
     with open(tmp, "wb") as f:
         f.write(data); f.flush(); os.fsync(f.fileno())
     os.chmod(tmp, 0o600); os.replace(tmp, path)
+
+# One writer at a time. The dashboard and the CLI each load the whole vault,
+# change it, and replace the file. Without a shared lock the later save
+# puts back a stale copy and drops the other writer's commit.
+_vault_guard = threading.Lock()
+_vault_owner = None
+_vault_depth = 0
+_vault_fd = None
+
+@contextmanager
+def vault_lock():
+    """Exclusive lock around a vault read-modify-write. Reentrant on the holding thread."""
+    global _vault_owner, _vault_depth, _vault_fd
+    me = threading.get_ident()
+    with _vault_guard:
+        nested = _vault_owner == me
+        if nested:
+            _vault_depth += 1
+    if not nested:
+        path = os.path.join(ROOT, ".vault.lock")
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            os.chmod(path, 0o600)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        except Exception:
+            os.close(fd)
+            raise
+        with _vault_guard:
+            _vault_owner = me
+            _vault_depth = 1
+            _vault_fd = fd
+    try:
+        yield
+    finally:
+        with _vault_guard:
+            _vault_depth -= 1
+            if _vault_depth == 0:
+                fd = _vault_fd
+                _vault_fd = None
+                _vault_owner = None
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                os.close(fd)
 
 def unlock():
     meta = load_meta()
@@ -363,17 +405,18 @@ def _migrate_v3(con, changes):
 def migrate(key):
     """Idempotent upgrade toward SCHEMA_VERSION. 0.1.0 (v2) vaults upgrade in place.
     Legacy columns backup_status / rpo_target_days are kept. Audits only when something changed."""
-    con = open_db(key)
-    try:
-        changes = []
-        _migrate_v2(con, changes)
-        _migrate_v3(con, changes)
-        if schema_version(con) != SCHEMA_VERSION:
-            con.execute("INSERT OR REPLACE INTO config(k,v) VALUES('schema_version',?)", (json.dumps(SCHEMA_VERSION),))
-            changes.append("config.schema_version=%s" % SCHEMA_VERSION)
-        if changes:
-            save_db(key, con)
-            audit(key, "migrate", detail={"to_version": SCHEMA_VERSION, "changes": changes})
-        return changes
-    finally:
-        con.close()
+    with vault_lock():
+        con = open_db(key)
+        try:
+            changes = []
+            _migrate_v2(con, changes)
+            _migrate_v3(con, changes)
+            if schema_version(con) != SCHEMA_VERSION:
+                con.execute("INSERT OR REPLACE INTO config(k,v) VALUES('schema_version',?)", (json.dumps(SCHEMA_VERSION),))
+                changes.append("config.schema_version=%s" % SCHEMA_VERSION)
+            if changes:
+                save_db(key, con)
+                audit(key, "migrate", detail={"to_version": SCHEMA_VERSION, "changes": changes})
+            return changes
+        finally:
+            con.close()
