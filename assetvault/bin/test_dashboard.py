@@ -35,6 +35,14 @@ try:
     check("completeness_missing_value", "missing value" in lg.completeness({"category": "Furniture", "room": "Office"}, 500))
     check("completeness_ok", lg.completeness({"category": "Furniture", "room": "Office", "replacement_value": 100}, 500) == [])
     check("warranty", [lg.warranty_status({"warranty_expiry": d}, now) for d in ("2026-01-01", "2026-12-01", "2027-12-01", None)] == ["expired", "expiring", "ok", "unknown"])
+    # A +09:00 instant must be converted to vault TZ. The same wall time without an offset is
+    # read as New York and lands on the next calendar day, so it falls off today's strip.
+    foreign = datetime.datetime(2026, 10, 25, 10, 0, tzinfo=datetime.timezone(datetime.timedelta(hours=9)))
+    now_ny = foreign.astimezone(TZ)
+    aware = foreign.isoformat(); naive = "2026-10-25T10:00"
+    check("tz_aware_met", lg.rpo_state(it, [{"date": aware, "result": "success"}], now_ny) == "Met")
+    check("tz_aware_on_strip", lg.day_strip([{"date": aware, "result": "success"}], 30, now_ny, it)[-1]["state"] == "success")
+    check("tz_naive_dropped", lg.day_strip([{"date": naive, "result": "success"}], 30, now_ny, it)[-1]["state"] == "no_result")
 
     # ---------- vault init + migration idempotency
     av.init(["Office", "Garage"], ["Computers", "Networking", "Furniture"], 500)
@@ -83,6 +91,7 @@ try:
     check("query_token_ok", req(None, full=root + "/api/health?token=" + tok)[0] == 200)
     st, body, hd = req("/")
     check("index_200", st == 200 and b"ASSET" in body and b"__BASE__" not in body and b"http://" not in body.replace(b"http://\"", b""))
+    check("log_form_sends_offset", b"getTimezoneOffset" in body and b"isoOffset" in body)
     check("no_external_refs", b"https://" not in body and b"cdn" not in body.lower() and b"googleapis" not in body)
     check("csp_header", "default-src 'none'" in hd.get("Content-Security-Policy", ""))
     st, body, _ = req("/api/state"); S = json.loads(body)
@@ -134,6 +143,19 @@ try:
     # sources rendering data (inject a fake failing source directly through the write path)
     con = av.open_db(k); con.execute("INSERT INTO sources(name,kind,last_sync,added,updated,skipped,health,detail) VALUES('FAKE Jamf','Jamf','2026-01-01',1,2,3,'failing','fake auth error')"); av.save_db(k, con); con.close()
     S = json.loads(req("/api/state")[1]); check("sources_listed", len(S["sources"]) == 1 and len(S["items"]) == 2)
+    # A +09:00 timestamp is the same instant as server "now" and must be stored in vault TZ,
+    # not as Tokyo wall time (which would fall off the New York 30-day strip).
+    server_now = datetime.datetime.fromisoformat(json.loads(req("/api/state")[1])["now"])
+    tokyo = server_now.astimezone(datetime.timezone(datetime.timedelta(hours=9))).isoformat(timespec="seconds")
+    check("log_offset_date", req(f"/api/item/{a}/log_backup", {"result": "manual", "date": tokyo, "note": "tz"})[0] == 200)
+    hist = json.loads(req(f"/api/item/{a}")[1])["history"]
+    stored = next(h["date"] for h in hist if h.get("note") == "tz")
+    check("log_offset_same_instant", abs((datetime.datetime.fromisoformat(stored) - server_now).total_seconds()) < 1)
+    check("log_offset_vault_tz", stored.endswith("-04:00") or stored.endswith("-05:00"))
+    paths = [os.path.join(TMP, "blobs", blob + ".enc"), os.path.join(TMP, "blobs", rblob + ".enc")]
+    check("blobs_present_before_delete", all(os.path.exists(p) for p in paths))
+    check("delete_attached", req(f"/api/item/{a}/delete", {"confirm_name": "FAKE-TEST Laptop Alpha"})[0] == 200)
+    check("blobs_removed", all(not os.path.exists(p) for p in paths) and req("/api/blob/" + blob)[0] == 404 and req("/api/blob/" + rblob)[0] == 404)
     raw = open(os.path.join(TMP, "vault.db.enc"), "rb").read()
     check("db_encrypted", b"SQLite format" not in raw and b"FAKE-TEST" not in raw)
     # ---------- lock.sh
