@@ -112,9 +112,9 @@ def plan_merge(local_items, incoming, source_id, now):
             iid = ix[val]
             if iid in used:
                 hit_used = True
-                # This serial already identified a row used earlier in the plan.
-                # Falling through to MAC or external id would update a different item.
-                if kind == "serial":
+                # This serial or MAC already identified a row used earlier in the plan.
+                # Falling through to a weaker key would update a different item.
+                if kind in ("serial", "mac"):
                     break
                 continue
             exact.append({"local_id": iid, "match_on": kind, "incoming": inc})

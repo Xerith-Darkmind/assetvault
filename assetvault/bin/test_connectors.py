@@ -1,5 +1,5 @@
 """Connector, import, merge, export, and migration tests. No live network."""
-import os, sys, json, secrets, tempfile, shutil, subprocess, socket, sqlite3, uuid, base64
+import os, sys, json, csv, secrets, tempfile, shutil, subprocess, socket, sqlite3, uuid, base64
 
 # This file lives at <repo>/assetvault/bin/ when run from a checkout, and at
 # <ASSETVAULT_ROOT>/bin/ after install.sh. The repo root is the directory that
@@ -208,6 +208,12 @@ try:
          local(2, serial="OTHER", mac="aa:bb:cc:dd:ee:02", external_ids={"7": "ext-2"}, links=[{"source_id": 7, "external_id": "ext-2"}])],
         [device(name="A", serial="DUP"), device(name="B", serial="DUP", mac="aa:bb:cc:dd:ee:02", external_id="ext-2")], 7, now)
     check("duplicate_serial_not_weaker", [row["local_id"] for row in plan["exact"]] == [1] and plan["skipped"][0]["reason"] == "duplicate in source" and all(row.get("local_id") != 2 for row in plan["exact"]))
+    plan = merge.plan_merge(
+        [local(1, mac="aa:bb:cc:dd:ee:11"),
+         local(2, external_ids={"7": "ext-mac"}, links=[{"source_id": 7, "external_id": "ext-mac"}])],
+        [device(name="A", mac="aa:bb:cc:dd:ee:11"),
+         device(name="B", mac="aa:bb:cc:dd:ee:11", external_id="ext-mac")], 7, now)
+    check("duplicate_mac_not_external", [row["local_id"] for row in plan["exact"]] == [1] and plan["exact"][0]["match_on"] == "mac" and plan["skipped"][0]["reason"] == "duplicate in source" and all(row.get("local_id") != 2 for row in plan["exact"]))
     named = device(serial="ABCDEFGH1234", model="ThinkPad")
     blank = device(serial="ABCDEFGH1234")
     leaked = public_device({"name": "host-ABCDEFGH1234", "serial": "ABCDEFGH1234", "external_id": "id-ABCDEFGH1234", "model": "ThinkPad"})
@@ -559,6 +565,30 @@ try:
     plain_csv = write_csv("plain.csv", "Name,Serial number,Asset tag\nLaptop,GENERIC9999,AT-9\n")
     plain = importers.load_import(plain_csv)
     check("generic_not_jamf", plain["detected"] == "generic" and plain["devices"][0]["name"] == "Laptop" and plain["devices"][0].get("managed_by") in (None, "") and "GENERIC9999" not in plain["devices"][0]["name"])
+    for _headers, _label in (
+        (["Computer name", "Serial number", "Model"], "computer_name"),
+        (["Device name", "Serial number", "Model"], "device_name"),
+        (["Hostname", "Serial number", "Managed"], "hostname_managed"),
+    ):
+        check("generic_sheet_" + _label, importers.detect(_headers)[0] == "generic")
+    host_csv = write_csv("host-managed.csv", "Hostname,Serial number,Model,Managed\nhost-01,SERIAL12345,ThinkPad,Yes\n")
+    host_loaded = importers.load_import(host_csv)
+    host_dev = host_loaded["devices"][0]
+    check("generic_hostname_not_jamf", host_loaded["detected"] == "generic" and host_dev["name"] == "host-01" and host_dev.get("managed_by") in (None, "") and host_dev["serial"] == "SERIAL12345" and host_dev["model"] == "ThinkPad")
+    for _header in ("UDID", "FileVault 2 Status", "FileVault Status", "JSS Computer ID", "Last Inventory Update", "Model Identifier", "Jamf Pro ID", "Last Contact Time"):
+        check("jamf_header_" + importers.norm_header(_header).replace(" ", "_"), importers.detect(["Serial Number", _header])[0] == "jamf")
+    short_csv = write_csv("short-serial.csv", "Model,Serial number\nPi,AB12\n")
+    short = ops.import_file(short_csv, name="Short serial", key=key)
+    short_in = short["review"]["new"][0]["incoming"]
+    short_view = json.dumps(short["review"])
+    ops.commit_staged(short["review"]["id"], key=key)
+    con = av.open_db(key)
+    stored_short = con.execute("SELECT name FROM items WHERE serial='AB12'").fetchone()
+    con.close()
+    short_export = ops.export_inventory("csv", key=key)
+    short_rows = list(csv.DictReader(open(os.path.join(VAULT, "exports", short_export["filename"]), encoding="utf-8")))
+    short_names = [row.get("name") or "" for row in short_rows if row.get("serial") == "AB12"]
+    check("short_serial_not_in_name", short_in["name"] == "Pi" and "AB12" not in short_in["name"] and "AB12" not in short_in["serial"] and "AB12" not in short_view and stored_short["name"] == "Pi" and "AB12" not in stored_short["name"] and short_names == ["Pi"] and all("AB12" not in name for name in short_names))
     try:
         importers.load_import(write_csv("old.xls", "name\n"))
         check("reject_xls", False)

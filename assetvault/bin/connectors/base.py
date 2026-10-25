@@ -275,7 +275,9 @@ def display_fallback(d):
     """A name that does not contain the raw serial."""
     model = d.get("model")
     serial = d.get("serial") or ""
-    if model and len(serial) >= 4:
+    # Same cutoff as mask_serial: four characters is the whole serial, and
+    # redact_serial_text will not strip a short serial out of a longer name.
+    if model and len(serial) > 4:
         return "%s (…%s)" % (model, serial[-4:])
     if model:
         return model

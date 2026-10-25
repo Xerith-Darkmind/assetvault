@@ -63,10 +63,10 @@ _JAMF = {
     "asset_tag": ["asset tag"],
     "external_id": ["udid", "jss computer id", "jamf pro id"],
 }
-# Headers that generic inventories do not share. Serial number + asset tag is not enough.
+# Jamf-only headers. Computer name, device name, asset tag, and a bare
+# "managed" column also appear on generic inventories.
 _JAMF_HINTS = (
-    "computer name", "device name",
-    "jamf pro id", "managed",
+    "jamf pro id",
     "last inventory update", "last contact time",
     "udid", "filevault 2 status", "filevault status",
     "jss computer id", "model identifier",
