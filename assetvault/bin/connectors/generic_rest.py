@@ -150,8 +150,10 @@ class GenericRestConnector(Connector):
             out.extend(self._map_page(items, None if limit is None else limit - len(out)))
             if limit is not None and len(out) >= limit:
                 return out[:limit]
-            if size and len(items) < int(size):
-                break
+            # Do not stop just because this page is shorter than page_size.
+            # APIs often clamp the requested size, so a full server page is
+            # still shorter than page_size while later pages exist. An empty
+            # page or a repeated first record ends the walk.
             page += 1
         return out
 
