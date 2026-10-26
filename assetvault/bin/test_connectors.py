@@ -502,6 +502,17 @@ try:
     script.on("page=1", js(200, {"data": {"devices": []}}))
     rows = list(GenericRestConnector(zero_cfg, env={"ASSETVAULT_REST_TOKEN": REST_TOK}, send=script.send).pull())
     check("rest_page_start_zero", len(rows) == 1 and rows[0]["name"] == "z0" and script.urls and "page=0" in script.urls[0] and "page=1" not in script.urls[0])
+    # page_size 100, but the server clamps to 2. A short page must not end the pull.
+    cap_cfg = dict(page_cfg, page_size=100, page_start=1)
+    script = Script()
+    script.on("page=1", js(200, {"data": {"devices": [
+        {"hostname": "cap-a", "serials": ["CAPA1111"]},
+        {"hostname": "cap-b", "serials": ["CAPB2222"]},
+    ]}}))
+    script.on("page=2", js(200, {"data": {"devices": [{"hostname": "cap-c", "serials": ["CAPC3333"]}]}}))
+    script.on("page=3", js(200, {"data": {"devices": []}}))
+    rows = list(GenericRestConnector(cap_cfg, env={"ASSETVAULT_REST_TOKEN": REST_TOK}, send=script.send).pull())
+    check("rest_page_respects_server_cap", [row["name"] for row in rows] == ["cap-a", "cap-b", "cap-c"] and any("page=2" in u for u in script.urls) and any("page=3" in u for u in script.urls))
     script = Script()
     script.on("/api/devices", js(401, {"token": REST_TOK}))
     try:
