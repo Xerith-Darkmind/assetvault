@@ -1,7 +1,9 @@
 """Active Directory computer objects over LDAPS.
 
 Password comes from ASSETVAULT_AD_PASSWORD. Plain LDAP (port 389 or ldap://)
-is refused unless config allow_insecure is the boolean True.
+is refused unless config allow_insecure is the boolean True. Referrals are
+not followed: a DC that points at another host must not receive the bind
+password, in particular not over cleartext ldap://.
 """
 import datetime, re, uuid
 from urllib.parse import urlsplit
@@ -49,10 +51,16 @@ class AdConnector(Connector):
         user = _dn(self.config.get("bind_user"), "bind user")
         password = self.secret("ASSETVAULT_AD_PASSWORD")
         factory = self.ldap_factory or default_ldap_factory
-        server_kwargs = {"host": host, "port": port, "use_ssl": use_ssl, "connect_timeout": self.timeout}
+        # ldap3 follows referrals by default and binds to the referred host with
+        # this password. AD referral URLs use ldap://, so the second hop can be
+        # cleartext and is not the host the owner configured. Refuse that path.
+        server_kwargs = {
+            "host": host, "port": port, "use_ssl": use_ssl, "connect_timeout": self.timeout,
+            "allowed_referral_hosts": [],
+        }
         conn_kwargs = {
             "user": user, "password": password, "auto_bind": True, "receive_timeout": self.timeout,
-            "read_only": True, "raise_exceptions": True,
+            "read_only": True, "raise_exceptions": True, "auto_referrals": False,
         }
         try:
             conn = factory(server_kwargs, conn_kwargs)
@@ -77,6 +85,9 @@ class AdConnector(Connector):
                     paged_size=200,
                     paged_cookie=cookie,
                 )
+                if _is_referral(conn):
+                    # An empty referral result must not commit as "no computers".
+                    raise ConnectorError("directory referral refused", "Unreachable")
                 for entry in getattr(conn, "entries", []) or []:
                     out.append(_map_entry(entry))
                     seen += 1
@@ -163,6 +174,16 @@ def default_ldap_factory(server_kwargs, conn_kwargs):
         sk["tls"] = ldap3.Tls(validate=ssl.CERT_REQUIRED, version=ssl.PROTOCOL_TLS_CLIENT)
     server = ldap3.Server(**sk)
     return ldap3.Connection(server, **conn_kwargs)
+
+
+def _is_referral(conn):
+    """True when the server answered with an LDAP referral (result code 10)."""
+    result = getattr(conn, "result", None) or {}
+    if not isinstance(result, dict):
+        return False
+    if result.get("result") == 10 or result.get("description") == "referral":
+        return True
+    return False
 
 
 def _cookie(conn):
