@@ -21,6 +21,7 @@ It is the storage and UI layer for a chat bot, and it also runs on its own.
 
 - Scheduled or unattended sync. A sync runs when you start it from the command line or the Sources page.
 - Write-back to a directory or MDM is intentionally not implemented. Connectors only pull.
+- Tested restore on a second device. Planned. Recover the vault after a machine is lost. Export an encrypted backup of the vault. Restore that backup with a command on a fresh machine. After restore, check that the item count matches and that attachments decrypt. Keep the passphrase stored apart from the backup, never together. The docs should say to keep them apart. The restore command should remind you. `export` writes an unencrypted CSV or PDF. `import` stages a device spreadsheet. Neither copies the encrypted vault nor loads it on a fresh machine.
 
 ## Security model
 
