@@ -385,7 +385,8 @@ try:
         AdConnector({"server": "dc.example", "base_dn": "DC=example,DC=test", "bind_user": "CN=svc,DC=example,DC=test"}, env={"ASSETVAULT_AD_PASSWORD": AD_PW}, ldap_factory=boom_factory).pull()
         check("ad_bind_error", False)
     except ConnectorError as exc:
-        check("ad_bind_error", exc.health == "Auth failed" and AD_PW not in str(exc) and captured["conn"]["read_only"] is True and captured["server"]["use_ssl"] is True)
+        check("ad_bind_error", exc.health == "Auth failed" and AD_PW not in str(exc) and captured["conn"]["read_only"] is True and captured["server"]["use_ssl"] is True
+              and captured["conn"].get("auto_referrals") is False and captured["server"].get("allowed_referral_hosts") == [])
     def timeout_factory(*_a, **_k):
         raise LDAPSocketReceiveTimeoutError("timed out " + AD_PW)
     try:
@@ -422,6 +423,39 @@ try:
     check("ad_paging", fake.calls == 2 and fake.unbound and len(rows) == 2 and rows[0]["external_id"] == str(sample)
           and rows[0]["last_checkin"] == "1969-12-31T19:00:00-05:00" and rows[0]["notes"] == "lab" and rows[0]["managed_by"] == "Active Directory"
           and AD_PW not in json.dumps(rows))
+
+    class RefConn:
+        def __init__(self):
+            self.searches = 0
+            self.entries = [{"name": "should-not-import"}]
+            self.result = {}
+            self.unbound = False
+        def search(self, **kw):
+            self.searches += 1
+            self.result = {"result": 10, "description": "referral", "referrals": ["ldap://evil.example:389/DC=example,DC=test"]}
+        def unbind(self):
+            self.unbound = True
+    referral = RefConn()
+    def ref_factory(server_kwargs, conn_kwargs):
+        assert conn_kwargs.get("auto_referrals") is False
+        assert server_kwargs.get("allowed_referral_hosts") == []
+        assert conn_kwargs.get("password") == AD_PW
+        return referral
+    try:
+        AdConnector({"server": "ldaps://dc.example", "base_dn": "DC=child,DC=example,DC=test", "bind_user": "CN=svc,DC=example,DC=test"}, env={"ASSETVAULT_AD_PASSWORD": AD_PW}, ldap_factory=ref_factory).pull()
+        check("ad_referral_refused", False)
+    except ConnectorError as exc:
+        check("ad_referral_refused", exc.health == "Unreachable" and "referral" in str(exc) and referral.unbound and referral.searches == 1
+              and "evil.example" not in str(exc) and AD_PW not in str(exc))
+
+    class EmptyConn:
+        def search(self, **kw):
+            self.entries = []
+            self.result = {"result": 0, "description": "success"}
+        def unbind(self):
+            pass
+    empty_rows = list(AdConnector({"server": "ldaps://dc.example", "base_dn": "OU=Empty,DC=example,DC=test", "bind_user": "CN=svc,DC=example,DC=test"}, env={"ASSETVAULT_AD_PASSWORD": AD_PW}, ldap_factory=lambda *_a: EmptyConn()).pull())
+    check("ad_empty_directory", empty_rows == [])
 
     # ---------- Jamf
     def jamf_computer(i):
